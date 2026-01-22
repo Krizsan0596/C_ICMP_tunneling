@@ -8,7 +8,9 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 unsigned short calculate_checksum(unsigned short *data, int len) {
     unsigned long sum = 0;
@@ -57,7 +59,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     return packet;
 }
 
-int send_packet(int socket, const icmp_packet *packet, size_t packet_size, const char *dest_ip, icmp_packet *queue) {
+int send_packet(int socket, const char *dest_ip, const icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend) {
     struct sockaddr_in dest_addr;
     icmp_packet *default_packet = NULL;
     size_t default_packet_size = 0;
@@ -80,7 +82,7 @@ int send_packet(int socket, const icmp_packet *packet, size_t packet_size, const
     memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
 
-    if (inet_pton(AF_INET, dest_ip, &dest_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, packet->dest_ip, &dest_addr.sin_addr) <= 0) {
         fprintf(stderr, "Invalid destination IP address.");
         if (default_packet) free(default_packet);
         return -EINVAL;
@@ -107,12 +109,18 @@ int send_packet(int socket, const icmp_packet *packet, size_t packet_size, const
         if (default_packet) free(default_packet);
         return -EIO;
     }
+    if (!resend) {
+        tracked_packet tracked;
+        tracked.packet = *packet;
+        gettimeofday(&tracked.send_time, NULL);
+        tracked.packet.dest_ip = dest_ip;
+        queue[4] = tracked;
+    }
 
-    queue[4] = (icmp_packet)*packet;
     return bytes_sent;
 }
 
-int listen_for_reply(int socket, icmp_packet *queue) {
+int listen_for_reply(int socket, tracked_packet *queue) {
     char buffer[1024];
     struct sockaddr_in src_addr;
     socklen_t addr_len = sizeof(src_addr);
@@ -132,7 +140,7 @@ int listen_for_reply(int socket, icmp_packet *queue) {
     }
 }
 
-int validate_reply(char *buffer, size_t buffer_len, icmp_packet *queue) {
+int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
     struct ip *ip_header = (struct ip*)buffer;
     int ip_header_len = ip_header->ip_hl * 4;
 
@@ -152,7 +160,7 @@ int validate_reply(char *buffer, size_t buffer_len, icmp_packet *queue) {
         uint8_t *payload = packet->payload;
 
         for (int i = 0; i < WINDOW_SIZE; i++) {
-            icmp_packet *current = &queue[i];
+            icmp_packet *current = &queue[i].packet;
             if (current->icmp_header.un.echo.id == id && current->icmp_header.un.echo.sequence == sequence && memcmp(current->payload, payload, PAYLOAD_SIZE) == 0) {
                 return i; // ACK for packet at index i
             }
@@ -160,4 +168,13 @@ int validate_reply(char *buffer, size_t buffer_len, icmp_packet *queue) {
         return -2; // Echo reply to non-tunneled packet, ignore
     }
     else return -3; // Not an echo reply, ignore
+}
+
+void resend_timeout(tracked_packet *queue, int socket) {
+    struct timeval current_time;
+    gettimeofday(&current_time, NULL);
+    for (int i = 0; i < WINDOW_SIZE; i++) {
+        if (queue[i].send_time.tv_sec + TIMEOUT < current_time.tv_sec) continue;
+        send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, sizeof(queue[i].packet), queue, true);
+    }
 }
