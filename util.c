@@ -36,13 +36,13 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     size_t payload_len = strlen(payload);
     size_t total_size = sizeof(struct icmphdr) + payload_len;
 
-    icmp_packet *packet = malloc(total_size);
+    icmp_packet *packet = malloc(sizeof(icmp_packet));
     if (packet == NULL) {
         fprintf(stderr, "Failed to allocate memory.");
         return NULL;
     }
 
-    memset(packet, 0, total_size);
+    memset(packet, 0, sizeof(icmp_packet));
 
     packet->icmp_header.type = ICMP_ECHO;
     packet->icmp_header.code = 0;
@@ -59,7 +59,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     return packet;
 }
 
-int send_packet(int socket, const char *dest_ip, const icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend) {
+int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend) {
     struct sockaddr_in dest_addr;
     icmp_packet *default_packet = NULL;
     size_t default_packet_size = 0;
@@ -71,16 +71,17 @@ int send_packet(int socket, const char *dest_ip, const icmp_packet *packet, size
         }
         default_payload[55] = '\0';
         
-        default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, packet->ttl, default_payload, &default_packet_size);
+        default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, &default_packet_size);
         if (default_packet == NULL) {
             return -ENOMEM;
         }
-        packet = (const icmp_packet *)default_packet;
+        packet = default_packet;
         packet_size = default_packet_size;
     }
 
     memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
+    packet->dest_ip = dest_ip;
 
     if (inet_pton(AF_INET, packet->dest_ip, &dest_addr.sin_addr) <= 0) {
         fprintf(stderr, "Invalid destination IP address.");
@@ -113,8 +114,7 @@ int send_packet(int socket, const char *dest_ip, const icmp_packet *packet, size
         tracked_packet tracked;
         tracked.packet = *packet;
         gettimeofday(&tracked.send_time, NULL);
-        tracked.packet.dest_ip = dest_ip;
-        queue[4] = tracked;
+        queue[WINDOW_SIZE - 1] = tracked;
     }
 
     return bytes_sent;
