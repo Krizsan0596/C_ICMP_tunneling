@@ -41,9 +41,9 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     
     size_t payload_len = strlen(payload);
     
-    // Prevent buffer overflow - payload array is 56 bytes
-    if (payload_len > sizeof(((icmp_packet*)0)->payload)) {
-        fprintf(stderr, "Payload too large. Maximum size is %zu bytes.\n", sizeof(((icmp_packet*)0)->payload));
+    // Prevent buffer overflow - payload array is PAYLOAD_SIZE bytes
+    if (payload_len > PAYLOAD_SIZE) {
+        fprintf(stderr, "Payload too large. Maximum size is %d bytes.\n", PAYLOAD_SIZE);
         return NULL;
     }
     
@@ -78,11 +78,11 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     size_t default_packet_size = 0;
 
     if (packet == NULL) {
-        char default_payload[56];
-        for (int i = 0; i < 56; i++) {
+        char default_payload[PAYLOAD_SIZE + 1];  // +1 for null terminator
+        for (int i = 0; i < PAYLOAD_SIZE; i++) {
             default_payload[i] = 0x10 + (i % 0x3F);
         }
-        default_payload[55] = '\0';
+        default_payload[PAYLOAD_SIZE] = '\0';
         
         default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, &default_packet_size);
         if (default_packet == NULL) {
@@ -126,6 +126,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     if (!resend) {
         tracked_packet tracked;
         tracked.packet = *packet;
+        tracked.packet_size = packet_size;
         gettimeofday(&tracked.send_time, NULL);
         queue[WINDOW_SIZE - 1] = tracked;
     }
@@ -180,7 +181,7 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
             icmp_packet *current = &queue[i].packet;
             uint16_t current_id = ntohs(current->icmp_header.un.echo.id);
             uint16_t current_seq = ntohs(current->icmp_header.un.echo.sequence);
-            if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, sizeof(current->payload)) == 0) {
+            if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, PAYLOAD_SIZE) == 0) {
                 return i; // ACK for packet at index i
             }
         }
@@ -195,7 +196,7 @@ void resend_timeout(tracked_packet *queue, int socket) {
     for (int i = 0; i < WINDOW_SIZE; i++) {
         // Resend packets that have exceeded the timeout
         if (queue[i].send_time.tv_sec + TIMEOUT < current_time.tv_sec) {
-            send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, sizeof(queue[i].packet), queue, true);
+            send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, queue[i].packet_size, queue, true);
         }
     }
 }

@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <sys/time.h>
 
-#define PAYLOAD_SIZE 64
+#define PAYLOAD_SIZE 56  // Actual ICMP payload size in icmp_packet struct
 #define WINDOW_SIZE 5
 #define TIMEOUT 5
 
@@ -22,6 +22,7 @@ typedef struct {
 typedef struct {
     icmp_packet packet;
     struct timeval send_time;
+    size_t packet_size;  // Track actual packet size for retransmission
 } tracked_packet;
 
 unsigned short calculate_checksum(unsigned short *data, int len);
