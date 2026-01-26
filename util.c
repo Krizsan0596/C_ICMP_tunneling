@@ -172,7 +172,7 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
             icmp_packet *current = &queue[i].packet;
             uint16_t current_id = ntohs(current->icmp_header.un.echo.id);
             uint16_t current_seq = ntohs(current->icmp_header.un.echo.sequence);
-            if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, 56) == 0) {
+            if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, sizeof(current->payload)) == 0) {
                 return i; // ACK for packet at index i
             }
         }
@@ -185,7 +185,9 @@ void resend_timeout(tracked_packet *queue, int socket) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
     for (int i = 0; i < WINDOW_SIZE; i++) {
-        if (queue[i].send_time.tv_sec + TIMEOUT >= current_time.tv_sec) continue;
-        send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, sizeof(queue[i].packet), queue, true);
+        // Resend packets that have exceeded the timeout
+        if (queue[i].send_time.tv_sec + TIMEOUT < current_time.tv_sec) {
+            send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, sizeof(queue[i].packet), queue, true);
+        }
     }
 }
