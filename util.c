@@ -24,6 +24,7 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
     if (len == 1) {
         odd_byte = 0;
         *((unsigned char*)&odd_byte) = *(unsigned char*)data;
+        sum += odd_byte;
     }
 
     sum = (sum >> 16) + (sum & 0xFFFF);
@@ -33,6 +34,11 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
 }
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const char *payload, size_t *packet_size) {
+    if (payload == NULL) {
+        fprintf(stderr, "Payload cannot be NULL.\n");
+        return NULL;
+    }
+    
     size_t payload_len = strlen(payload);
     size_t total_size = sizeof(struct icmphdr) + payload_len;
 
@@ -51,7 +57,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     memcpy(packet->payload, payload, payload_len);
 
     packet->icmp_header.checksum = 0;
-    packet->icmp_header.checksum = calculate_checksum((unsigned short *)&packet->icmp_header, total_size);
+    packet->icmp_header.checksum = calculate_checksum((unsigned short *)packet, total_size);
     *packet_size = total_size;
 
     packet->ttl = ttl;
@@ -134,10 +140,13 @@ int listen_for_reply(int socket, tracked_packet *queue) {
     int is_valid = validate_reply(buffer, bytes_received, queue);
 
     if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
-    free(&queue[is_valid]);
+    
+    // Shift queue elements down to remove acknowledged packet
     for (int i = is_valid + 1; i < WINDOW_SIZE; i++) {
         queue[i - 1] = queue[i];
     }
+    
+    return 0; // Successfully processed reply
 }
 
 int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
@@ -161,7 +170,9 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
 
         for (int i = 0; i < WINDOW_SIZE; i++) {
             icmp_packet *current = &queue[i].packet;
-            if (current->icmp_header.un.echo.id == id && current->icmp_header.un.echo.sequence == sequence && memcmp(current->payload, payload, PAYLOAD_SIZE) == 0) {
+            uint16_t current_id = ntohs(current->icmp_header.un.echo.id);
+            uint16_t current_seq = ntohs(current->icmp_header.un.echo.sequence);
+            if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, 56) == 0) {
                 return i; // ACK for packet at index i
             }
         }
@@ -174,7 +185,7 @@ void resend_timeout(tracked_packet *queue, int socket) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
     for (int i = 0; i < WINDOW_SIZE; i++) {
-        if (queue[i].send_time.tv_sec + TIMEOUT < current_time.tv_sec) continue;
+        if (queue[i].send_time.tv_sec + TIMEOUT >= current_time.tv_sec) continue;
         send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, sizeof(queue[i].packet), queue, true);
     }
 }
