@@ -41,7 +41,6 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     
     size_t payload_len = strlen(payload);
     
-    // Prevent buffer overflow - payload array is PAYLOAD_SIZE bytes
     if (payload_len > PAYLOAD_SIZE) {
         fprintf(stderr, "Payload too large. Maximum size is %d bytes.\n", PAYLOAD_SIZE);
         return NULL;
@@ -78,11 +77,11 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     size_t default_packet_size = 0;
 
     if (packet == NULL) {
-        char default_payload[PAYLOAD_SIZE + 1];  // +1 for null terminator
-        for (int i = 0; i < PAYLOAD_SIZE; i++) {
+        char default_payload[PAYLOAD_SIZE];
+        for (int i = 0; i < PAYLOAD_SIZE - 1; i++) {
             default_payload[i] = 0x10 + (i % 0x3F);
         }
-        default_payload[PAYLOAD_SIZE] = '\0';
+        default_payload[PAYLOAD_SIZE - 1] = '\0';
         
         default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, &default_packet_size);
         if (default_packet == NULL) {
@@ -150,12 +149,12 @@ int listen_for_reply(int socket, tracked_packet *queue) {
 
     if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
     
-    // Shift queue elements down to remove acknowledged packet
+    // Shift queue elements down to remove ACKed packet
     for (int i = is_valid + 1; i < WINDOW_SIZE; i++) {
         queue[i - 1] = queue[i];
     }
     
-    return 0; // Successfully processed reply
+    return 0;
 }
 
 int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
@@ -195,7 +194,7 @@ void resend_timeout(tracked_packet *queue, int socket) {
     gettimeofday(&current_time, NULL);
     for (int i = 0; i < WINDOW_SIZE; i++) {
         // Resend packets that have exceeded the timeout
-        if (queue[i].send_time.tv_sec + TIMEOUT < current_time.tv_sec) {
+        if (current_time.tv_sec > queue[i].send_time.tv_sec + TIMEOUT) {
             send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, queue[i].packet_size, queue, true);
         }
     }
