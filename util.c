@@ -40,6 +40,13 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     }
     
     size_t payload_len = strlen(payload);
+    
+    // Prevent buffer overflow - payload array is 56 bytes
+    if (payload_len > sizeof(((icmp_packet*)0)->payload)) {
+        fprintf(stderr, "Payload too large. Maximum size is %zu bytes.\n", sizeof(((icmp_packet*)0)->payload));
+        return NULL;
+    }
+    
     size_t total_size = sizeof(struct icmphdr) + payload_len;
 
     icmp_packet *packet = malloc(sizeof(icmp_packet));
@@ -123,6 +130,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         queue[WINDOW_SIZE - 1] = tracked;
     }
 
+    if (default_packet) free(default_packet);
     return bytes_sent;
 }
 
