@@ -35,14 +35,14 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const char *payload, size_t *packet_size) {
     if (payload == NULL) {
-        fprintf(stderr, "Payload cannot be NULL.\n");
+        fprintf(stderr, "generate_custom_ping_packet: programmer error - payload argument must not be NULL.\n");
         return NULL;
     }
     
     size_t payload_len = strlen(payload);
     
     if (payload_len > PAYLOAD_SIZE) {
-        fprintf(stderr, "Payload too large. Maximum size is %d bytes.\n", PAYLOAD_SIZE);
+        fprintf(stderr, "generate_custom_ping_packet: programmer error - payload length exceeds maximum of %d bytes.\n", PAYLOAD_SIZE);
         return NULL;
     }
     
@@ -153,6 +153,8 @@ int listen_for_reply(int socket, tracked_packet *queue) {
     for (int i = is_valid + 1; i < WINDOW_SIZE; i++) {
         queue[i - 1] = queue[i];
     }
+    // Clear the last queue element to avoid resending stale packets
+    memset(&queue[WINDOW_SIZE - 1], 0, sizeof(tracked_packet));
     
     return 0;
 }
