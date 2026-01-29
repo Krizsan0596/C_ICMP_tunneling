@@ -1,4 +1,5 @@
 #include "util.h"
+#include <bits/types/struct_timeval.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
@@ -31,6 +32,19 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
     sum += (sum >> 16);
 
     return ~sum;
+}
+
+int construct_default_payload(uint8_t *buf, int len) {
+    if (len < sizeof(struct timeval)) return 1;
+    for (int i = 0; i < len; i++) {
+        buf[i] = (uint8_t)i;
+    }
+
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    memcpy(buf, &tv, sizeof(tv));
+
+    return 0;
 }
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size) {
@@ -79,9 +93,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
 
     if (packet == NULL) {
         uint8_t default_payload[PAYLOAD_SIZE];
-        for (int i = 0; i < PAYLOAD_SIZE; i++) {
-            default_payload[i] = 0x10 + (i % 0x3F);
-        }
+        if (construct_default_payload(default_payload, PAYLOAD_SIZE) != 0) return -EINVAL;
         
         default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, PAYLOAD_SIZE, &default_packet_size);
         if (default_packet == NULL) {
