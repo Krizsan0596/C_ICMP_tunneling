@@ -61,7 +61,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
 
     icmp_packet *packet = malloc(sizeof(icmp_packet));
     if (packet == NULL) {
-        fprintf(stderr, "generate_custom_ping_packet: failed to allocate memory.");
+        fprintf(stderr, "generate_custom_ping_packet: failed to allocate memory.\n");
         return NULL;
     }
 
@@ -107,14 +107,14 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     packet->dest_ip = dest_ip;
 
     if (inet_pton(AF_INET, packet->dest_ip, &dest_addr.sin_addr) <= 0) {
-        fprintf(stderr, "Invalid destination IP address.");
+        fprintf(stderr, "Invalid destination IP address.\n");
         if (default_packet) free(default_packet);
         return -EINVAL;
     }
     
     if (packet->ttl > 0) {
         if (setsockopt(socket, IPPROTO_IP, IP_TTL, &packet->ttl, sizeof(packet->ttl)) < 0) {
-            fprintf(stderr, "Failed to set ttl value.");
+            fprintf(stderr, "Failed to set ttl value.\n");
             if (default_packet) free(default_packet);
             return -EINVAL;
         }
@@ -123,13 +123,13 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     ssize_t bytes_sent = sendto(socket, packet, packet_size, 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
 
     if (bytes_sent < 0) {
-        fprintf(stderr, "Failed to send packet.");
+        fprintf(stderr, "Failed to send packet.\n");
         if (default_packet) free(default_packet);
         return -EIO;
     }
 
     if ((size_t)bytes_sent != packet_size) {
-        fprintf(stderr, "Partial send.");
+        fprintf(stderr, "Partial send.\n");
         if (default_packet) free(default_packet);
         return -EIO;
     }
@@ -152,7 +152,7 @@ int listen_for_reply(int socket, tracked_packet *queue) {
     
     ssize_t bytes_received = recvfrom(socket, buffer, 1024, 0, (struct sockaddr*)&src_addr, &addr_len);
     if (bytes_received < 0) {
-        fprintf(stderr, "Receiving failed.");
+        fprintf(stderr, "Receiving failed.\n");
         return -EIO;
     }
 
