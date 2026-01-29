@@ -26,7 +26,7 @@ typedef struct {
 } tracked_packet;
 
 unsigned short calculate_checksum(unsigned short *data, int len);
-icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const char *payload, size_t *packet_size);
+icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
 int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend);
 int listen_for_reply(int socket, tracked_packet *queue);
 int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue);
