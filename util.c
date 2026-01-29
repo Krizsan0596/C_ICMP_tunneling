@@ -1,5 +1,4 @@
 #include "util.h"
-#include <bits/types/struct_timeval.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
