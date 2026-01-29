@@ -33,24 +33,22 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
     return ~sum;
 }
 
-icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const char *payload, size_t *packet_size) {
+icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size) {
     if (payload == NULL) {
-        fprintf(stderr, "generate_custom_ping_packet: programmer error - payload argument must not be NULL.\n");
+        fprintf(stderr, "generate_custom_ping_packet: payload argument must not be NULL.\n");
         return NULL;
     }
-    
-    size_t payload_len = strlen(payload);
     
     if (payload_len > PAYLOAD_SIZE) {
-        fprintf(stderr, "generate_custom_ping_packet: programmer error - payload length exceeds maximum of %d bytes.\n", PAYLOAD_SIZE);
+        fprintf(stderr, "generate_custom_ping_packet: payload length exceeds maximum of %d bytes.\n", PAYLOAD_SIZE);
         return NULL;
     }
     
-    size_t total_size = sizeof(struct icmphdr) + payload_len;
+    size_t total_size = sizeof(struct icmphdr) + PAYLOAD_SIZE;
 
     icmp_packet *packet = malloc(sizeof(icmp_packet));
     if (packet == NULL) {
-        fprintf(stderr, "Failed to allocate memory.");
+        fprintf(stderr, "generate_custom_ping_packet: failed to allocate memory.");
         return NULL;
     }
 
@@ -61,6 +59,9 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     packet->icmp_header.un.echo.id = htons(id);
     packet->icmp_header.un.echo.sequence = htons(sequence);
     memcpy(packet->payload, payload, payload_len);
+    if (payload_len < PAYLOAD_SIZE) {
+        memset(packet->payload + payload_len, 0, PAYLOAD_SIZE - payload_len);
+    }
 
     packet->icmp_header.checksum = 0;
     packet->icmp_header.checksum = calculate_checksum((unsigned short *)packet, total_size);
@@ -77,13 +78,12 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     size_t default_packet_size = 0;
 
     if (packet == NULL) {
-        char default_payload[PAYLOAD_SIZE];
-        for (int i = 0; i < PAYLOAD_SIZE - 1; i++) {
+        uint8_t default_payload[PAYLOAD_SIZE];
+        for (int i = 0; i < PAYLOAD_SIZE; i++) {
             default_payload[i] = 0x10 + (i % 0x3F);
         }
-        default_payload[PAYLOAD_SIZE - 1] = '\0';
         
-        default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, &default_packet_size);
+        default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, PAYLOAD_SIZE, &default_packet_size);
         if (default_packet == NULL) {
             return -ENOMEM;
         }
