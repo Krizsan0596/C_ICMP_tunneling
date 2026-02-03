@@ -4,6 +4,8 @@
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
+#include <pthread.h>
+#include <semaphore.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <sys/time.h>
@@ -34,6 +36,8 @@ typedef struct {
     tracked_packet queue[WINDOW_SIZE];
     uint8_t end;
     uint64_t next_sequence;
+    pthread_mutex_t lock;
+    sem_t counter;
 } sliding_window;
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
