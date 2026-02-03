@@ -33,7 +33,7 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
     return ~sum;
 }
 
-// Fill a payload buffer with a timestamp and an incremental pattern. (Default payload on Linux.)
+// Fill a payload buffer with a timestamp followed by an incremental pattern. (Default payload on Linux.)
 int construct_default_payload(uint8_t *buf, int len) {
     if (len < sizeof(struct timeval)) return 1;
     for (int i = 0; i < len; i++) {
@@ -76,7 +76,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     packet->icmp_header.un.echo.sequence = htons(sequence);
     memcpy(packet->payload, payload, payload_len);
     if (payload_len < PAYLOAD_SIZE) {
-        // Zero-pad remaining bytes
+        // Zero-pad remaining bytes.
         memset(packet->payload + payload_len, 0, PAYLOAD_SIZE - payload_len);
     }
 
@@ -126,7 +126,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         }
     }
 
-    // We send 64 bytes, so the rest of the packet struct is ignored, only header + payload is transmitted.
+    // We send packet_size bytes (header + payload), so the rest of the packet struct is ignored.
     ssize_t bytes_sent = sendto(socket, packet, packet_size, 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
 
     if (bytes_sent < 0) {
