@@ -11,8 +11,52 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <fcntl.h>
+
+/*
+ * Reads from a file into memory (mmap).
+ * Returns the number of bytes read on success or a negative code on error.
+ */
+int64_t read_map(const char *filename, const uint8_t** data){
+    int fd = open(filename, O_RDONLY);
+    if (fd == -1) return -EIO;
+    
+    struct stat st;
+    if (fstat(fd, &st) == -1) {
+        close(fd);
+        return -EIO;
+    }
+    uint64_t file_size = st.st_size;
+    if (file_size == 0) {
+        close(fd);
+        return -EIO;
+    }
+    void *map = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    close(fd);
+    if (map == MAP_FAILED) return -EIO;
+    *data = map;
+    return (int64_t)file_size;
+}
+
+/*
+ * Memory maps an existing file for writing.
+ * Returns the file size on success or negative error codes on failure.
+ * Caller must munmap the returned pointer.
+ */
+int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size){
+    int fd = open(filename, O_RDWR);
+    if (fd == -1) return -EIO;
+    
+    void *map = mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (map == MAP_FAILED) return -EIO;
+    *data = map;
+    return (int64_t)file_size;
+}
 
 unsigned short calculate_checksum(unsigned short *data, int len) {
     unsigned long sum = 0;
