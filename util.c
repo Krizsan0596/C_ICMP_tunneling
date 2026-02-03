@@ -250,12 +250,11 @@ int listen_for_reply(int socket, sliding_window *window) {
         fprintf(stderr, "Receiving failed.\n");
         return -EIO;
     }
-
+    pthread_mutex_lock(&window->lock);
     int is_valid = validate_reply(buffer, bytes_received, window->queue);
 
     if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
     
-    pthread_mutex_lock(&window->lock);
     window->queue[is_valid].acknowledged = true;
     pthread_mutex_unlock(&window->lock);
     
