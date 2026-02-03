@@ -144,12 +144,13 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     }
     // When resending, packet is already tracked, so do not track again, just reset its timestamp.
     if (!resend) {
+        pthread_mutex_lock(&window->lock);
         if (window->queue[window->end].in_use) {
+            pthread_mutex_unlock(&window->lock);
             fprintf(stderr, "Window is full. Cannot track new packet.\n");
             if (default_packet) free(default_packet);
             return -EBUSY;
         }
-        pthread_mutex_lock(&window->lock);
         tracked_packet tracked;
         tracked.packet = *packet;
         tracked.packet_size = packet_size;
@@ -178,7 +179,11 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
 
 // Slides window when first packet is ACKed.
 void slide_window(sliding_window *window) {
-    if (window->queue[0].acknowledged == false) return;
+    pthread_mutex_lock(&window->lock);
+    if (window->queue[0].acknowledged == false) {
+        pthread_mutex_unlock(&window->lock);
+        return;
+    }
     int n = WINDOW_SIZE;
     for (int i = 0; i < WINDOW_SIZE; i++) {
         if (window->queue[i].acknowledged == false) {
@@ -187,7 +192,6 @@ void slide_window(sliding_window *window) {
         }
     }
 
-    pthread_mutex_lock(&window->lock);
     if (n > 0 && n < WINDOW_SIZE) {
         memmove(window->queue, window->queue + n, (WINDOW_SIZE - n) * sizeof(tracked_packet));
     }
@@ -254,6 +258,9 @@ int listen_for_reply(int socket, sliding_window *window) {
     pthread_mutex_lock(&window->lock);
     window->queue[is_valid].acknowledged = true;
     pthread_mutex_unlock(&window->lock);
+    
+    // Slide the window to advance and make room for new packets.
+    slide_window(window);
     
     return 0;
 }
