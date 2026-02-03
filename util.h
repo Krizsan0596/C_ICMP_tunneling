@@ -32,16 +32,13 @@ typedef struct {
 // Sliding window for managing in-flight packets and sequencing.
 typedef struct {
     tracked_packet queue[WINDOW_SIZE];
-    uint8_t base;
     uint8_t end;
     uint64_t next_sequence;
 } sliding_window;
 
-unsigned short calculate_checksum(unsigned short *data, int len);
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
-int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend);
-int listen_for_reply(int socket, tracked_packet *queue);
-int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue);
-void resend_timeout(tracked_packet *queue, int socket);
+int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend);
+int listen_for_reply(int socket, sliding_window *window);
+void resend_timeout(sliding_window *window, int socket);
 
 #endif
