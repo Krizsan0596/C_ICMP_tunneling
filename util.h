@@ -23,7 +23,16 @@ typedef struct {
     icmp_packet packet;
     struct timeval send_time;
     size_t packet_size;
+    bool in_use;
+    bool acknowledged;
 } tracked_packet;
+
+typedef struct {
+    tracked_packet queue[WINDOW_SIZE];
+    uint8_t base;
+    uint8_t end;
+    uint64_t next_sequence;
+} sliding_window;
 
 unsigned short calculate_checksum(unsigned short *data, int len);
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
