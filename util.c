@@ -272,7 +272,9 @@ void resend_timeout(sliding_window *window, int socket) {
     for (int i = 0; i < WINDOW_SIZE; i++) {
         if (window->queue[i].in_use && !window->queue[i].acknowledged &&
             current_time.tv_sec > window->queue[i].send_time.tv_sec + TIMEOUT) {
+            pthread_mutex_unlock(&window->lock);
             send_packet(socket, window->queue[i].packet.dest_ip, &window->queue[i].packet, window->queue[i].packet_size, window, true);
+            pthread_mutex_lock(&window->lock);
         }
     }
     pthread_mutex_unlock(&window->lock);
