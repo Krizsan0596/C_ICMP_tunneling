@@ -142,7 +142,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         if (default_packet) free(default_packet);
         return -EIO;
     }
-    // When resending, packet is already tracked, so do not track again, just reset it's timestamp.
+    // When resending, packet is already tracked, so do not track again, just reset its timestamp.
     if (!resend) {
         if (window->queue[window->end].in_use) {
             fprintf(stderr, "Window is full. Cannot track new packet.\n");
@@ -176,7 +176,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
 }
 
 
-// Slides window when first packed is ACKed.
+// Slides window when first packet is ACKed.
 void slide_window(sliding_window *window) {
     if (window->queue[0].acknowledged == false) return;
     int n = WINDOW_SIZE;
