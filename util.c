@@ -90,7 +90,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
 }
 
 // Send an ICMP packet and track it for retransmit.
-int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend) {
+int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend) {
     struct sockaddr_in dest_addr;
     icmp_packet *default_packet = NULL;
     size_t default_packet_size = 0;
@@ -140,43 +140,56 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         if (default_packet) free(default_packet);
         return -EIO;
     }
-    // When resending, packet is already tracked, so do not track again.
+    // When resending, packet is already tracked, so do not track again, just reset it's timestamp.
     if (!resend) {
+        if (window->queue[window->end].in_use) {
+            fprintf(stderr, "Window is full. Cannot track new packet.\n");
+            if (default_packet) free(default_packet);
+            return -EBUSY;
+        }
         tracked_packet tracked;
         tracked.packet = *packet;
         tracked.packet_size = packet_size;
+        tracked.in_use = true;
+        tracked.acknowledged = false;
         gettimeofday(&tracked.send_time, NULL);
-        queue[WINDOW_SIZE - 1] = tracked;
+        window->queue[window->end] = tracked;
+        if (window->end < WINDOW_SIZE - 1) window->end++;
+    }
+    else {
+        for (int i = 0; i < WINDOW_SIZE; i++) {
+            if (memcmp(&window->queue[i].packet, packet, sizeof(icmp_packet)) == 0) {
+                gettimeofday(&window->queue[i].send_time, NULL); 
+                break;
+            }
+        }
     }
 
     if (default_packet) free(default_packet);
     return bytes_sent;
 }
 
-// Receive a reply and update the retransmit window when an ACK is found.
-int listen_for_reply(int socket, tracked_packet *queue) {
-    char buffer[1024];
-    struct sockaddr_in src_addr;
-    socklen_t addr_len = sizeof(src_addr);
-    
-    ssize_t bytes_received = recvfrom(socket, buffer, 1024, 0, (struct sockaddr*)&src_addr, &addr_len);
-    if (bytes_received < 0) {
-        fprintf(stderr, "Receiving failed.\n");
-        return -EIO;
+
+// Slides window when first packed is ACKed.
+void slide_window(sliding_window *window) {
+    if (window->queue[0].acknowledged == false) return;
+    int n = WINDOW_SIZE;
+    for (int i = 0; i < WINDOW_SIZE; i++) {
+        if (window->queue[i].acknowledged == false) {
+            n = i;
+            break;
+        }
     }
 
-    int is_valid = validate_reply(buffer, bytes_received, queue);
-
-    if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
-    
-    // Shift queue elements down to remove ACKed packet
-    for (int i = is_valid + 1; i < WINDOW_SIZE; i++) {
-        queue[i - 1] = queue[i];
+    if (n > 0 && n < WINDOW_SIZE) {
+        memmove(window->queue, window->queue + n, (WINDOW_SIZE - n) * sizeof(tracked_packet));
     }
-    // Clear the last queue element to avoid resending stale packets
-    memset(&queue[WINDOW_SIZE - 1], 0, sizeof(tracked_packet));
-    
-    return 0;
+
+    for (int i = WINDOW_SIZE - n; i < WINDOW_SIZE; i++) {
+        window->queue[i].in_use = false;
+    }
+
+    window->end -= n;
 }
 
 // Validate an incoming packet and match it to a tracked echo request.
@@ -213,13 +226,35 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
     else return -3; // Not an echo reply, ignore
 }
 
+// Receive a reply and update the retransmit window when an ACK is found.
+int listen_for_reply(int socket, sliding_window *window) {
+    char buffer[1024];
+    struct sockaddr_in src_addr;
+    socklen_t addr_len = sizeof(src_addr);
+    
+    ssize_t bytes_received = recvfrom(socket, buffer, 1024, 0, (struct sockaddr*)&src_addr, &addr_len);
+    if (bytes_received < 0) {
+        fprintf(stderr, "Receiving failed.\n");
+        return -EIO;
+    }
+
+    int is_valid = validate_reply(buffer, bytes_received, window->queue);
+
+    if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
+    
+    window->queue[is_valid].acknowledged = true;
+    
+    return 0;
+}
+
 // Resend any queued packets that exceed the TIMEOUT threshold.
-void resend_timeout(tracked_packet *queue, int socket) {
+void resend_timeout(sliding_window *window, int socket) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
     for (int i = 0; i < WINDOW_SIZE; i++) {
-        if (current_time.tv_sec > queue[i].send_time.tv_sec + TIMEOUT) {
-            send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, queue[i].packet_size, queue, true);
+        if (window->queue[i].in_use && !window->queue[i].acknowledged &&
+            current_time.tv_sec > window->queue[i].send_time.tv_sec + TIMEOUT) {
+            send_packet(socket, window->queue[i].packet.dest_ip, &window->queue[i].packet, window->queue[i].packet_size, window, true);
         }
     }
 }
