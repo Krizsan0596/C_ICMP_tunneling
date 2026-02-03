@@ -12,6 +12,7 @@
 #define WINDOW_SIZE 5
 #define TIMEOUT 5
 
+// Represents an ICMP echo packet with payload and metadata.
 typedef struct {
     struct icmphdr icmp_header;
     uint8_t payload[PAYLOAD_SIZE];
@@ -19,6 +20,7 @@ typedef struct {
     const char* dest_ip;
 } icmp_packet;
 
+// Tracks a sent packet's state for retransmission and acknowledgement.
 typedef struct {
     icmp_packet packet;
     struct timeval send_time;
@@ -27,6 +29,7 @@ typedef struct {
     bool acknowledged;
 } tracked_packet;
 
+// Sliding window for managing in-flight packets and sequencing.
 typedef struct {
     tracked_packet queue[WINDOW_SIZE];
     uint8_t base;
