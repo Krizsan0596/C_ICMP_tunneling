@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,6 +148,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
             if (default_packet) free(default_packet);
             return -EBUSY;
         }
+        pthread_mutex_lock(&window->lock);
         tracked_packet tracked;
         tracked.packet = *packet;
         tracked.packet_size = packet_size;
@@ -155,11 +157,14 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         gettimeofday(&tracked.send_time, NULL);
         window->queue[window->end] = tracked;
         if (window->end < WINDOW_SIZE - 1) window->end++;
+        pthread_mutex_unlock(&window->lock);
     }
     else {
         for (int i = 0; i < WINDOW_SIZE; i++) {
             if (memcmp(&window->queue[i].packet, packet, sizeof(icmp_packet)) == 0) {
+                pthread_mutex_lock(&window->lock);
                 gettimeofday(&window->queue[i].send_time, NULL); 
+                pthread_mutex_unlock(&window->lock);
                 break;
             }
         }
@@ -181,6 +186,7 @@ void slide_window(sliding_window *window) {
         }
     }
 
+    pthread_mutex_lock(&window->lock);
     if (n > 0 && n < WINDOW_SIZE) {
         memmove(window->queue, window->queue + n, (WINDOW_SIZE - n) * sizeof(tracked_packet));
     }
@@ -190,6 +196,7 @@ void slide_window(sliding_window *window) {
     }
 
     window->end -= n;
+    pthread_mutex_unlock(&window->lock);
 }
 
 // Validate an incoming packet and match it to a tracked echo request.
@@ -242,7 +249,9 @@ int listen_for_reply(int socket, sliding_window *window) {
 
     if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
     
+    pthread_mutex_lock(&window->lock);
     window->queue[is_valid].acknowledged = true;
+    pthread_mutex_unlock(&window->lock);
     
     return 0;
 }
@@ -251,10 +260,12 @@ int listen_for_reply(int socket, sliding_window *window) {
 void resend_timeout(sliding_window *window, int socket) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
+    pthread_mutex_lock(&window->lock);
     for (int i = 0; i < WINDOW_SIZE; i++) {
         if (window->queue[i].in_use && !window->queue[i].acknowledged &&
             current_time.tv_sec > window->queue[i].send_time.tv_sec + TIMEOUT) {
             send_packet(socket, window->queue[i].packet.dest_ip, &window->queue[i].packet, window->queue[i].packet_size, window, true);
         }
     }
+    pthread_mutex_unlock(&window->lock);
 }
