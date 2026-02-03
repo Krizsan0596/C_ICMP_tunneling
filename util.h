@@ -43,7 +43,6 @@ typedef struct {
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
 int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend);
 int listen_for_reply(int socket, sliding_window *window);
-void slide_window(sliding_window *window);
 void resend_timeout(sliding_window *window, int socket);
 
 #endif
