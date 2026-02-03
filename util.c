@@ -3,6 +3,7 @@
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,6 +198,7 @@ void slide_window(sliding_window *window) {
 
     window->end -= n;
     pthread_mutex_unlock(&window->lock);
+    for (int i = 0; i < n; ++i) sem_post(&window->counter);
 }
 
 // Validate an incoming packet and match it to a tracked echo request.
