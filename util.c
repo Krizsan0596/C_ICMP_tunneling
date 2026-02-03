@@ -33,6 +33,7 @@ unsigned short calculate_checksum(unsigned short *data, int len) {
     return ~sum;
 }
 
+// Fill a payload buffer with a timestamp and an incremental pattern. (Default payload on Linux.)
 int construct_default_payload(uint8_t *buf, int len) {
     if (len < sizeof(struct timeval)) return 1;
     for (int i = 0; i < len; i++) {
@@ -46,6 +47,7 @@ int construct_default_payload(uint8_t *buf, int len) {
     return 0;
 }
 
+// Build an ICMP echo request packet with a fixed-size payload.
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size) {
     if (payload == NULL) {
         fprintf(stderr, "generate_custom_ping_packet: payload argument must not be NULL.\n");
@@ -57,6 +59,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
         return NULL;
     }
     
+    // Always send full PAYLOAD_SIZE to keep packet sizes uniform.
     size_t total_size = sizeof(struct icmphdr) + PAYLOAD_SIZE;
 
     icmp_packet *packet = malloc(sizeof(icmp_packet));
@@ -73,6 +76,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     packet->icmp_header.un.echo.sequence = htons(sequence);
     memcpy(packet->payload, payload, payload_len);
     if (payload_len < PAYLOAD_SIZE) {
+        // Zero-pad remaining bytes
         memset(packet->payload + payload_len, 0, PAYLOAD_SIZE - payload_len);
     }
 
@@ -85,6 +89,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
     return packet;
 }
 
+// Send an ICMP packet and track it for retransmit.
 int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, tracked_packet *queue, bool resend) {
     struct sockaddr_in dest_addr;
     icmp_packet *default_packet = NULL;
@@ -104,6 +109,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
 
     memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
+    // Keep dest_ip with the packet so we can resend later.
     packet->dest_ip = dest_ip;
 
     if (inet_pton(AF_INET, packet->dest_ip, &dest_addr.sin_addr) <= 0) {
@@ -120,6 +126,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         }
     }
 
+    // We send 64 bytes, so the rest of the packet struct is ignored, only header + payload is transmitted.
     ssize_t bytes_sent = sendto(socket, packet, packet_size, 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
 
     if (bytes_sent < 0) {
@@ -133,6 +140,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         if (default_packet) free(default_packet);
         return -EIO;
     }
+    // When resending, packet is already tracked, so do not track again.
     if (!resend) {
         tracked_packet tracked;
         tracked.packet = *packet;
@@ -145,6 +153,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     return bytes_sent;
 }
 
+// Receive a reply and update the retransmit window when an ACK is found.
 int listen_for_reply(int socket, tracked_packet *queue) {
     char buffer[1024];
     struct sockaddr_in src_addr;
@@ -170,6 +179,7 @@ int listen_for_reply(int socket, tracked_packet *queue) {
     return 0;
 }
 
+// Validate an incoming packet and match it to a tracked echo request.
 int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
     struct ip *ip_header = (struct ip*)buffer;
     int ip_header_len = ip_header->ip_hl * 4;
@@ -193,6 +203,7 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
             icmp_packet *current = &queue[i].packet;
             uint16_t current_id = ntohs(current->icmp_header.un.echo.id);
             uint16_t current_seq = ntohs(current->icmp_header.un.echo.sequence);
+            // Match on id/sequence and full payload to avoid false ACKs.
             if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, PAYLOAD_SIZE) == 0) {
                 return i; // ACK for packet at index i
             }
@@ -202,11 +213,11 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
     else return -3; // Not an echo reply, ignore
 }
 
+// Resend any queued packets that exceed the TIMEOUT threshold.
 void resend_timeout(tracked_packet *queue, int socket) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
     for (int i = 0; i < WINDOW_SIZE; i++) {
-        // Resend packets that have exceeded the timeout
         if (current_time.tv_sec > queue[i].send_time.tv_sec + TIMEOUT) {
             send_packet(socket, queue[i].packet.dest_ip, &queue[i].packet, queue[i].packet_size, queue, true);
         }
