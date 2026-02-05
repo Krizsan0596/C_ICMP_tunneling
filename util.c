@@ -186,7 +186,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         if (default_packet) free(default_packet);
         return -EIO;
     }
-    // When resending, packet is already tracked, so do not track again, just reset its timestamp.
+    // When resending, packet is already tracked, so do not track again, just reset its timeout timestamp.
     if (!resend) {
         pthread_mutex_lock(&window->lock);
         if (window->queue[window->end].in_use) {
@@ -200,7 +200,8 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         tracked.packet_size = packet_size;
         tracked.in_use = true;
         tracked.acknowledged = false;
-        gettimeofday(&tracked.send_time, NULL);
+        gettimeofday(&tracked.timeout_time, NULL);
+        tracked.timeout_time.tv_sec += TIMEOUT;
         window->queue[window->end] = tracked;
         if (window->end < WINDOW_SIZE - 1) window->end++;
         pthread_mutex_unlock(&window->lock);
@@ -209,7 +210,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         for (int i = 0; i < WINDOW_SIZE; i++) {
             if (memcmp(&window->queue[i].packet, packet, sizeof(icmp_packet)) == 0) {
                 pthread_mutex_lock(&window->lock);
-                gettimeofday(&window->queue[i].send_time, NULL); 
+                gettimeofday(&window->queue[i].timeout_time, NULL); 
                 pthread_mutex_unlock(&window->lock);
                 break;
             }
@@ -315,7 +316,7 @@ void resend_timeout(sliding_window *window, int socket) {
     pthread_mutex_lock(&window->lock);
     for (int i = 0; i < WINDOW_SIZE; i++) {
         if (window->queue[i].in_use && !window->queue[i].acknowledged &&
-            current_time.tv_sec > window->queue[i].send_time.tv_sec + TIMEOUT) {
+            current_time.tv_sec > window->queue[i].timeout_time.tv_sec) {
             pthread_mutex_unlock(&window->lock);
             send_packet(socket, window->queue[i].packet.dest_ip, &window->queue[i].packet, window->queue[i].packet_size, window, true);
             pthread_mutex_lock(&window->lock);
@@ -323,3 +324,5 @@ void resend_timeout(sliding_window *window, int socket) {
     }
     pthread_mutex_unlock(&window->lock);
 }
+
+int64_t payload_tunnel()
