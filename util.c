@@ -325,13 +325,17 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
     while (true) {
         if (sem_trywait(&window->counter)){
             pthread_mutex_lock(&queue->lock);
-            while (window->count < PAYLOAD_SIZE) {
+            while (queue->count == 0) {
                 pthread_cond_wait(&queue->data_available, &queue->lock);
             }
             uint8_t payload[PAYLOAD_SIZE];
-            memcpy(payload, &queue->buffer[queue->tail], PAYLOAD_SIZE);
-            queue->count -= PAYLOAD_SIZE;
-            queue->tail = (queue->tail + PAYLOAD_SIZE) % queue->capacity;
+            size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
+            memcpy(payload, &queue->buffer[queue->tail], bytes_to_copy);
+            if (bytes_to_copy < PAYLOAD_SIZE) {
+                memset(payload + bytes_to_copy, 0, PAYLOAD_SIZE - bytes_to_copy);
+            }
+            queue->count -= bytes_to_copy;
+            queue->tail = (queue->tail + bytes_to_copy) % queue->capacity;
             pthread_mutex_unlock(&queue->lock);
             size_t packet_size = 0;
             icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
