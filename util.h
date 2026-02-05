@@ -25,7 +25,7 @@ typedef struct {
 // Tracks a sent packet's state for retransmission and acknowledgement.
 typedef struct {
     icmp_packet packet;
-    struct timeval send_time;
+    struct timeval timeout_time;
     size_t packet_size;
     bool in_use;
     bool acknowledged;
