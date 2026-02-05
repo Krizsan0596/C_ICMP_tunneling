@@ -1,7 +1,9 @@
 #ifndef UTIL_H
 #define UTIL_H
-#include <arpa/inet.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <arpa/inet.h>
+#include <bits/pthreadtypes.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
@@ -50,10 +52,12 @@ typedef struct {
     size_t tail;
     size_t count;
     pthread_mutex_t lock;
+    pthread_cond_t data_available;
+    pthread_cond_t queue_not_full;
 } data_queue;
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
-int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend);
+int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend);
 int listen_for_reply(int socket, sliding_window *window);
 void resend_timeout(sliding_window *window, int socket);
 

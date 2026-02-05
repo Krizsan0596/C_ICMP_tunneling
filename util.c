@@ -4,6 +4,7 @@
 #include <netinet/ip_icmp.h>
 #include <pthread.h>
 #include <semaphore.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,7 +137,7 @@ icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t
 }
 
 // Send an ICMP packet and track it for retransmit.
-int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend) {
+int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend) {
     struct sockaddr_in dest_addr;
     icmp_packet *default_packet = NULL;
     size_t default_packet_size = 0;
@@ -320,6 +321,22 @@ void resend_timeout(sliding_window *window, int socket) {
     pthread_mutex_unlock(&window->lock);
 }
 
-int payload_tunnel() {
-    
+int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) { // TO DO: Multithread this
+    while (true) {
+        if (sem_trywait(&window->counter)){
+            pthread_mutex_lock(&queue->lock);
+            while (window->count < PAYLOAD_SIZE) {
+                pthread_cond_wait(&queue->data_available, &queue->lock);
+            }
+            uint8_t payload[PAYLOAD_SIZE];
+            memcpy(payload, &queue->buffer[queue->tail], PAYLOAD_SIZE);
+            queue->count -= PAYLOAD_SIZE;
+            queue->tail = (queue->tail + PAYLOAD_SIZE) % queue->capacity;
+            pthread_mutex_unlock(&queue->lock);
+            size_t packet_size = 0;
+            icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
+            send_packet(socket, dest_ip, packet, packet_size, window, false);
+        }
+        resend_timeout(window,  socket);
+    }
 }
