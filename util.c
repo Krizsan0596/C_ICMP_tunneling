@@ -1,4 +1,5 @@
 #include "util.h"
+#include <bits/time.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
@@ -14,6 +15,7 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <stdbool.h>
 #include <fcntl.h>
@@ -326,7 +328,13 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
         if (sem_trywait(&window->counter)){
             pthread_mutex_lock(&queue->lock);
             while (queue->count == 0) {
-                pthread_cond_wait(&queue->data_available, &queue->lock);
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                ts.tv_nsec += 500000000;
+                if (ts.tv_nsec >= 1000000000) {
+                    ts.tv_sec += 1;
+                    ts.tv_nsec -= 1000000000;
+                }
             }
             uint8_t payload[PAYLOAD_SIZE];
             size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
@@ -340,7 +348,9 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
             size_t packet_size = 0;
             icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
             send_packet(socket, dest_ip, packet, packet_size, window, false);
+            free(packet);
         }
+        else usleep(500000);
         resend_timeout(window,  socket);
     }
 }
