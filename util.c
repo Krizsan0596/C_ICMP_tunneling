@@ -189,7 +189,7 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
     // When resending, packet is already tracked, so do not track again, just reset its timeout timestamp.
     if (!resend) {
         pthread_mutex_lock(&window->lock);
-        if (window->queue[window->end].in_use) {
+        if (window->count >= WINDOW_SIZE) {
             pthread_mutex_unlock(&window->lock);
             fprintf(stderr, "Window is full. Cannot track new packet.\n");
             if (default_packet) free(default_packet);
@@ -202,15 +202,17 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
         tracked.acknowledged = false;
         gettimeofday(&tracked.timeout_time, NULL);
         tracked.timeout_time.tv_sec += TIMEOUT;
-        window->queue[window->end] = tracked;
-        if (window->end < WINDOW_SIZE - 1) window->end++;
+        window->queue[window->head] = tracked;
+        window->head = (window->head + 1) % WINDOW_SIZE;
+        window->count++;
         pthread_mutex_unlock(&window->lock);
     }
     else {
-        for (int i = 0; i < WINDOW_SIZE; i++) {
-            if (memcmp(&window->queue[i].packet, packet, sizeof(icmp_packet)) == 0) {
+        for (int i = 0; i < window->count; i++) {
+            int idx = (window->tail + i) % WINDOW_SIZE;
+            if (memcmp(&window->queue[idx].packet, packet, sizeof(icmp_packet)) == 0) {
                 pthread_mutex_lock(&window->lock);
-                gettimeofday(&window->queue[i].timeout_time, NULL); 
+                gettimeofday(&window->queue[idx].timeout_time, NULL); 
                 pthread_mutex_unlock(&window->lock);
                 break;
             }
@@ -225,33 +227,24 @@ int send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t pac
 // Slides window when first packet is ACKed.
 void slide_window(sliding_window *window) {
     pthread_mutex_lock(&window->lock);
-    if (window->queue[0].acknowledged == false) {
+    if (window->count == 0 || window->queue[window->tail].acknowledged == false) {
         pthread_mutex_unlock(&window->lock);
         return;
     }
-    int n = WINDOW_SIZE;
-    for (int i = 0; i < WINDOW_SIZE; i++) {
-        if (window->queue[i].acknowledged == false) {
-            n = i;
-            break;
-        }
+    int n = 0;
+    while (n < window->count && window->queue[(window->tail + n) % WINDOW_SIZE].acknowledged) {
+        window->queue[(window->tail + n) % WINDOW_SIZE].in_use = false;
+        n++;
     }
 
-    if (n > 0 && n < WINDOW_SIZE) {
-        memmove(window->queue, window->queue + n, (WINDOW_SIZE - n) * sizeof(tracked_packet));
-    }
-
-    for (int i = WINDOW_SIZE - n; i < WINDOW_SIZE; i++) {
-        window->queue[i].in_use = false;
-    }
-
-    window->end -= n;
+    window->tail = (window->tail + n) % WINDOW_SIZE;
+    window->count -= n;
     pthread_mutex_unlock(&window->lock);
     for (int i = 0; i < n; ++i) sem_post(&window->counter);
 }
 
 // Validate an incoming packet and match it to a tracked echo request.
-int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
+int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue, uint8_t tail, uint8_t count) {
     struct ip *ip_header = (struct ip*)buffer;
     int ip_header_len = ip_header->ip_hl * 4;
 
@@ -270,13 +263,14 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue) {
         uint16_t id = ntohs(packet->icmp_header.un.echo.id);
         uint8_t *payload = packet->payload;
 
-        for (int i = 0; i < WINDOW_SIZE; i++) {
-            icmp_packet *current = &queue[i].packet;
+        for (int i = 0; i < count; i++) {
+            int idx = (tail + i) % WINDOW_SIZE;
+            icmp_packet *current = &queue[idx].packet;
             uint16_t current_id = ntohs(current->icmp_header.un.echo.id);
             uint16_t current_seq = ntohs(current->icmp_header.un.echo.sequence);
             // Match on id/sequence and full payload to avoid false ACKs.
             if (current_id == id && current_seq == sequence && memcmp(current->payload, payload, PAYLOAD_SIZE) == 0) {
-                return i; // ACK for packet at index i
+                return idx; // ACK for packet at index idx
             }
         }
         return -2; // Echo reply to non-tunneled packet, ignore
@@ -296,7 +290,7 @@ int listen_for_reply(int socket, sliding_window *window) {
         return -EIO;
     }
     pthread_mutex_lock(&window->lock);
-    int is_valid = validate_reply(buffer, bytes_received, window->queue);
+    int is_valid = validate_reply(buffer, bytes_received, window->queue, window->tail, window->count);
 
     if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
     
@@ -314,15 +308,18 @@ void resend_timeout(sliding_window *window, int socket) {
     struct timeval current_time;
     gettimeofday(&current_time, NULL);
     pthread_mutex_lock(&window->lock);
-    for (int i = 0; i < WINDOW_SIZE; i++) {
-        if (window->queue[i].in_use && !window->queue[i].acknowledged &&
-            current_time.tv_sec > window->queue[i].timeout_time.tv_sec) {
+    for (int i = 0; i < window->count; i++) {
+        int idx = (window->tail + i) % WINDOW_SIZE;
+        if (window->queue[idx].in_use && !window->queue[idx].acknowledged &&
+            current_time.tv_sec > window->queue[idx].timeout_time.tv_sec) {
             pthread_mutex_unlock(&window->lock);
-            send_packet(socket, window->queue[i].packet.dest_ip, &window->queue[i].packet, window->queue[i].packet_size, window, true);
+            send_packet(socket, window->queue[idx].packet.dest_ip, &window->queue[idx].packet, window->queue[idx].packet_size, window, true);
             pthread_mutex_lock(&window->lock);
         }
     }
     pthread_mutex_unlock(&window->lock);
 }
 
-int64_t payload_tunnel()
+int payload_tunnel() {
+    
+}
