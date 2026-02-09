@@ -15,6 +15,8 @@
 #define PAYLOAD_SIZE 56
 #define WINDOW_SIZE 5
 #define TIMEOUT 5
+#define MAGIC_NUMBER 0xBEEF // Placeholder, swap for unique.
+#define min(a, b) ((a) < (b) ? (a) : (b))
 
 // Represents an ICMP echo packet with payload and metadata.
 typedef struct {
