@@ -2,6 +2,7 @@
 #include <bits/time.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -46,7 +47,7 @@ int64_t read_map(const char *filename, const uint8_t** data){
 }
 
 /*
- * Memory maps an existing file for writing.
+ * Memory maps a file for writing.
  * Returns the file size on success or negative error codes on failure.
  * Caller must munmap the returned pointer.
  */
@@ -54,6 +55,11 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size){
     int fd = open(filename, O_RDWR);
     if (fd == -1) return -EIO;
     
+    if (ftruncate(fd, file_size) == -1) {
+        close(fd);
+        return -EIO;
+    }
+
     void *map = mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (map == MAP_FAILED) return -EIO;
@@ -211,7 +217,7 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
         pthread_mutex_unlock(&window->lock);
     }
     else {
-        for (int i = 0; i < window->count; i++) {
+    for (int i = 0; i < window->count; i++) {
             int idx = (window->tail + i) % WINDOW_SIZE;
             if (memcmp(&window->queue[idx].packet, packet, sizeof(icmp_packet)) == 0) {
                 pthread_mutex_lock(&window->lock);
@@ -247,7 +253,7 @@ void slide_window(sliding_window *window) {
 }
 
 // Validate an incoming packet and match it to a tracked echo request.
-int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue, uint8_t tail, uint8_t count) {
+int validate_reply(uint8_t *buffer, size_t buffer_len, tracked_packet *queue, uint8_t tail, uint8_t count) {
     struct ip *ip_header = (struct ip*)buffer;
     int ip_header_len = ip_header->ip_hl * 4;
 
@@ -286,7 +292,7 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue, uint8
     else return -3; // Not an echo reply, ignore
 }
 
-ssize_t receive_packet(int socket, char *buffer, size_t buffer_size) {
+ssize_t receive_packet(int socket, uint8_t *buffer, size_t buffer_size) {
     struct sockaddr_in src_addr;
     socklen_t addr_len = sizeof(src_addr);
     
@@ -300,7 +306,7 @@ ssize_t receive_packet(int socket, char *buffer, size_t buffer_size) {
 
 // Receive a reply and update the retransmit window when an ACK is found.
 int listen_for_reply(int socket, sliding_window *window) {
-    char buffer[1024];
+    uint8_t buffer[1024];
     
     ssize_t bytes_received = receive_packet(socket, buffer, sizeof(buffer));
     if (bytes_received < 0) {
@@ -370,4 +376,52 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
     }
 }
 
+ssize_t receive_payload(int socket, uint8_t *data, struct in_addr *source) {
+    uint8_t buffer[1024];
+    memset(buffer, 0, sizeof(buffer));
+    size_t buffer_size = receive_packet(socket, buffer, sizeof(buffer));
 
+    struct iphdr *ip_header = (struct iphdr *)buffer;
+    int ip_header_len = ip_header->ihl * 4;
+
+    struct in_addr *src_addr;
+    src_addr->s_addr = ip_header->saddr;
+    if (source->s_addr != 0 && memcmp(source, src_addr, sizeof(struct in_addr)) != 0) return -1; // Not a packet from known tunnel source.
+    if (calculate_checksum((unsigned short *)buffer, buffer_size) != 0) return -2; // Incorrect checksum, broken data
+    uint8_t *payload = buffer + ip_header_len + sizeof(struct icmphdr);
+    size_t payload_len = buffer_size - (ip_header_len + sizeof(struct icmphdr));
+    if (payload_len != PAYLOAD_SIZE) return -2; // Not packet from tunnel
+    memcpy(data, payload, payload_len);
+    source->s_addr = src_addr->s_addr;
+    return payload_len;
+}
+
+ssize_t receive_file(int socket, char *out_file) {
+    struct in_addr source = {0};
+    bool source_locked = false;
+    uint8_t *data = NULL;
+    uint8_t *current = NULL;
+    uint64_t received_len = 0;
+    uint64_t file_size = 0;
+    do {
+        uint8_t buffer[1024];
+        ssize_t data_len = receive_payload(socket, buffer, &source);
+        if (data_len < 0) continue;
+        if (!source_locked) {
+            uint8_t magic[2] = { (MAGIC_NUMBER >> 8) & 0xFF, MAGIC_NUMBER & 0xFF };
+            if (memcmp(magic, buffer, 2) != 0) {
+                memset(&source, 0, sizeof(struct in_addr));
+                continue;
+            }
+            for (int i = 2; i < 11; i++) {
+                file_size = (file_size << 8) | buffer[i]; // Sender has to transmit magic number + file size before the actual file.
+            }
+            write_map(out_file, &data, file_size);
+            current = data;
+            source_locked = true;
+            continue;
+        }
+        memcpy(current, buffer, min(data_len, (file_size - data_len))); // data_len includes padding
+        received_len += min(data_len, (file_size - data_len));
+    } while (received_len < file_size);
+}
