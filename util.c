@@ -261,10 +261,15 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue, uint8
         return -1; //Invalid checksum, corrupted packet
     }
 
+
     if (packet->icmp_header.type == ICMP_ECHOREPLY) {
         uint16_t sequence = ntohs(packet->icmp_header.un.echo.sequence);
         uint16_t id = ntohs(packet->icmp_header.un.echo.id);
         uint8_t *payload = packet->payload;
+
+        if (id != (getpid() & 0xFFFF)) {
+            return -4; // Echo reply to packet not sent by the program.
+        }
 
         for (int i = 0; i < count; i++) {
             int idx = (tail + i) % WINDOW_SIZE;
@@ -281,17 +286,27 @@ int validate_reply(char *buffer, size_t buffer_len, tracked_packet *queue, uint8
     else return -3; // Not an echo reply, ignore
 }
 
-// Receive a reply and update the retransmit window when an ACK is found.
-int listen_for_reply(int socket, sliding_window *window) {
-    char buffer[1024];
+ssize_t receive_packet(int socket, char *buffer, size_t buffer_size) {
     struct sockaddr_in src_addr;
     socklen_t addr_len = sizeof(src_addr);
     
-    ssize_t bytes_received = recvfrom(socket, buffer, 1024, 0, (struct sockaddr*)&src_addr, &addr_len);
+    ssize_t bytes_received = recvfrom(socket, buffer, buffer_size, 0, (struct sockaddr*)&src_addr, &addr_len);
     if (bytes_received < 0) {
         fprintf(stderr, "Receiving failed.\n");
         return -EIO;
     }
+    return bytes_received;
+}
+
+// Receive a reply and update the retransmit window when an ACK is found.
+int listen_for_reply(int socket, sliding_window *window) {
+    char buffer[1024];
+    
+    ssize_t bytes_received = receive_packet(socket, buffer, sizeof(buffer));
+    if (bytes_received < 0) {
+        return bytes_received;
+    }
+
     pthread_mutex_lock(&window->lock);
     int is_valid = validate_reply(buffer, bytes_received, window->queue, window->tail, window->count);
 
@@ -351,6 +366,8 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
             free(packet);
         }
         else usleep(500000);
-        resend_timeout(window,  socket);
+        resend_timeout(window, socket);
     }
 }
+
+
