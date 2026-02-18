@@ -23,7 +23,8 @@
 
 /*
  * Reads from a file into memory (mmap).
- * Returns the number of bytes read on success or a negative code on error.
+ * Returns the file size in bytes on success or a negative code on error.
+ * Caller must munmap the returned pointer.
  */
 int64_t read_map(const char *filename, const uint8_t** data){
     int fd = open(filename, O_RDONLY);
@@ -356,6 +357,7 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
                     ts.tv_sec += 1;
                     ts.tv_nsec -= 1000000000;
                 }
+                pthread_cond_timedwait(&queue->data_available, &queue->lock, &ts);
             }
             uint8_t payload[PAYLOAD_SIZE];
             size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
@@ -416,7 +418,7 @@ ssize_t receive_file(int socket, char *out_file) {
             for (int i = 2; i < 11; i++) {
                 file_size = (file_size << 8) | buffer[i]; // Sender has to transmit magic number + file size before the actual file.
             }
-            write_map(out_file, &data, file_size);
+            if(write_map(out_file, &data, file_size) <= 0) return -1;
             current = data;
             source_locked = true;
             continue;
@@ -424,4 +426,52 @@ ssize_t receive_file(int socket, char *out_file) {
         memcpy(current, buffer, min(data_len, (file_size - data_len))); // data_len includes padding
         received_len += min(data_len, (file_size - data_len));
     } while (received_len < file_size);
+    munmap(data, file_size);
+    return file_size;
+}
+
+ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
+    const uint8_t *data = NULL;
+    ssize_t file_size = read_map(in_file, &data);
+    if (file_size < 0) return file_size;
+    size_t current = 0;
+
+    uint8_t header[11];
+    header[0] = (MAGIC_NUMBER >> 8) & 0xFF;
+    header[1] = MAGIC_NUMBER & 0xFF;
+    for (int i = 2; i < 11; i++) {
+        header[i] = (file_size >> (8 * (10 - i))) & 0xFF;
+    }
+    
+    sliding_window window = {
+        .queue = {0},
+        .count = 0,
+        .head = 0,
+        .tail = 0,
+        .next_sequence = 1
+    };
+    pthread_mutex_init(&window.lock, NULL);
+    sem_init(&window.counter, 0, 5);
+
+    uint8_t queued_data[1024] = {0};
+
+    data_queue queue = {
+        .buffer = queued_data,
+        .capacity = WINDOW_SIZE * PAYLOAD_SIZE,
+        .count = 0,
+        .head = 0,
+        .tail = queue.capacity
+    };
+    pthread_mutex_init(&queue.lock, NULL);
+
+    // Send header
+    size_t packet_size = 0;
+    icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
+    send_packet(socket, dest_ip, packet, packet_size, &window, false);
+
+    memcpy(&queue.buffer[queue.head], &data[current], min(64, file_size - current));
+    payload_tunnel(socket, &queue, &window, dest_ip); // TODO: Loop memcpy and move this to separate thread.
+    
+    munmap((void*)data, file_size);
+    return file_size;
 }
