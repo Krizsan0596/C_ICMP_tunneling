@@ -345,20 +345,10 @@ void resend_timeout(sliding_window *window, int socket) {
     pthread_mutex_unlock(&window->lock);
 }
 
-int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) { // TO DO: Multithread this
+int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
     while (true) {
-        if (sem_trywait(&window->counter)){
-            pthread_mutex_lock(&queue->lock);
-            while (queue->count == 0) {
-                struct timespec ts;
-                clock_gettime(CLOCK_REALTIME, &ts);
-                ts.tv_nsec += 500000000;
-                if (ts.tv_nsec >= 1000000000) {
-                    ts.tv_sec += 1;
-                    ts.tv_nsec -= 1000000000;
-                }
-                pthread_cond_timedwait(&queue->data_available, &queue->lock, &ts);
-            }
+        pthread_mutex_lock(&queue->lock);
+        if (queue->count > 0 && sem_trywait(&window->counter) == 0) {
             uint8_t payload[PAYLOAD_SIZE];
             size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
             memcpy(payload, &queue->buffer[queue->tail], bytes_to_copy);
@@ -372,8 +362,10 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
             icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
             send_packet(socket, dest_ip, packet, packet_size, window, false);
             free(packet);
+        } else {
+            pthread_mutex_unlock(&queue->lock);
+            usleep(500000);
         }
-        else usleep(500000);
         resend_timeout(window, socket);
     }
 }
@@ -389,8 +381,9 @@ ssize_t receive_payload(int socket, uint8_t *data, struct in_addr *source) {
     struct in_addr *src_addr;
     src_addr->s_addr = ip_header->saddr;
     if (source->s_addr != 0 && memcmp(source, src_addr, sizeof(struct in_addr)) != 0) return -1; // Not a packet from known tunnel source.
-    if (calculate_checksum((unsigned short *)buffer, buffer_size) != 0) return -2; // Incorrect checksum, broken data
-    uint8_t *payload = buffer + ip_header_len + sizeof(struct icmphdr);
+    uint8_t *packet = buffer + ip_header_len;
+    if (calculate_checksum((unsigned short *)packet, buffer_size - ip_header_len) != 0) return -2; // Incorrect checksum, broken data
+    uint8_t *payload = packet + sizeof(struct icmphdr);
     size_t payload_len = buffer_size - (ip_header_len + sizeof(struct icmphdr));
     if (payload_len != PAYLOAD_SIZE) return -2; // Not packet from tunnel
     memcpy(data, payload, payload_len);
@@ -470,6 +463,9 @@ ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
     send_packet(socket, dest_ip, packet, packet_size, &window, false);
 
     memcpy(&queue.buffer[queue.head], &data[current], min(64, file_size - current));
+    current += min(64, file_size - current);
+    queue.head += min(64, file_size - current);
+    queue.count += min(64, file_size - current);
     payload_tunnel(socket, &queue, &window, dest_ip); // TODO: Loop memcpy and move this to separate thread.
     
     munmap((void*)data, file_size);
