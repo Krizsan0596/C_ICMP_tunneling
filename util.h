@@ -54,8 +54,6 @@ typedef struct {
     size_t tail;
     size_t count;
     pthread_mutex_t lock;
-    pthread_cond_t data_available;
-    pthread_cond_t queue_not_full;
 } data_queue;
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
