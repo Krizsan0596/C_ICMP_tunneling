@@ -23,7 +23,7 @@ typedef struct {
     struct icmphdr icmp_header;
     uint8_t payload[PAYLOAD_SIZE];
     uint8_t ttl;
-    const char* dest_ip;
+    char dest_ip[INET_ADDRSTRLEN];
 } icmp_packet;
 
 // Tracks a sent packet's state for retransmission and acknowledgement.

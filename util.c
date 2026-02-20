@@ -155,7 +155,7 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
         uint8_t default_payload[PAYLOAD_SIZE];
         if (construct_default_payload(default_payload, PAYLOAD_SIZE) != 0) return -EINVAL;
         
-        default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, 1, 64, default_payload, PAYLOAD_SIZE, &default_packet_size);
+        default_packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, default_payload, PAYLOAD_SIZE, &default_packet_size);
         if (default_packet == NULL) {
             return -ENOMEM;
         }
@@ -166,7 +166,8 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
     memset(&dest_addr, 0, sizeof(dest_addr));
     dest_addr.sin_family = AF_INET;
     // Keep dest_ip with the packet so we can resend later.
-    packet->dest_ip = dest_ip;
+    strncpy(packet->dest_ip, dest_ip, INET_ADDRSTRLEN - 1);
+    packet->dest_ip[INET_ADDRSTRLEN - 1] = '\0';
 
     if (inet_pton(AF_INET, packet->dest_ip, &dest_addr.sin_addr) <= 0) {
         fprintf(stderr, "Invalid destination IP address.\n");
@@ -220,12 +221,12 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
     else {
     for (int i = 0; i < window->count; i++) {
             int idx = (window->tail + i) % WINDOW_SIZE;
+            pthread_mutex_lock(&window->lock);
             if (memcmp(&window->queue[idx].packet, packet, sizeof(icmp_packet)) == 0) {
-                pthread_mutex_lock(&window->lock);
                 gettimeofday(&window->queue[idx].timeout_time, NULL); 
-                pthread_mutex_unlock(&window->lock);
                 break;
             }
+            pthread_mutex_unlock(&window->lock);
         }
     }
 
@@ -351,7 +352,11 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
         if (queue->count > 0 && sem_trywait(&window->counter) == 0) {
             uint8_t payload[PAYLOAD_SIZE];
             size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
-            memcpy(payload, &queue->buffer[queue->tail], bytes_to_copy);
+            size_t first_chunk = min(bytes_to_copy, queue->capacity - queue->tail);
+            memcpy(payload, &queue->buffer[queue->tail], first_chunk);
+            if (first_chunk < bytes_to_copy) {
+                memcpy(payload + first_chunk, queue->buffer, bytes_to_copy - first_chunk);
+            }
             if (bytes_to_copy < PAYLOAD_SIZE) {
                 memset(payload + bytes_to_copy, 0, PAYLOAD_SIZE - bytes_to_copy);
             }
@@ -378,16 +383,16 @@ ssize_t receive_payload(int socket, uint8_t *data, struct in_addr *source) {
     struct iphdr *ip_header = (struct iphdr *)buffer;
     int ip_header_len = ip_header->ihl * 4;
 
-    struct in_addr *src_addr;
-    src_addr->s_addr = ip_header->saddr;
-    if (source->s_addr != 0 && memcmp(source, src_addr, sizeof(struct in_addr)) != 0) return -1; // Not a packet from known tunnel source.
+    struct in_addr src_addr;
+    src_addr.s_addr = ip_header->saddr;
+    if (source->s_addr != 0 && memcmp(source, &src_addr, sizeof(struct in_addr)) != 0) return -1; // Not a packet from known tunnel source.
     uint8_t *packet = buffer + ip_header_len;
     if (calculate_checksum((unsigned short *)packet, buffer_size - ip_header_len) != 0) return -2; // Incorrect checksum, broken data
     uint8_t *payload = packet + sizeof(struct icmphdr);
     size_t payload_len = buffer_size - (ip_header_len + sizeof(struct icmphdr));
     if (payload_len != PAYLOAD_SIZE) return -2; // Not packet from tunnel
     memcpy(data, payload, payload_len);
-    source->s_addr = src_addr->s_addr;
+    source->s_addr = src_addr.s_addr;
     return payload_len;
 }
 
@@ -408,7 +413,7 @@ ssize_t receive_file(int socket, char *out_file) {
                 memset(&source, 0, sizeof(struct in_addr));
                 continue;
             }
-            for (int i = 2; i < 11; i++) {
+            for (int i = 2; i < 10; i++) {
                 file_size = (file_size << 8) | buffer[i]; // Sender has to transmit magic number + file size before the actual file.
             }
             if(write_map(out_file, &data, file_size) <= 0) return -1;
@@ -416,8 +421,9 @@ ssize_t receive_file(int socket, char *out_file) {
             source_locked = true;
             continue;
         }
-        memcpy(current, buffer, min(data_len, (file_size - data_len))); // data_len includes padding
-        received_len += min(data_len, (file_size - data_len));
+        memcpy(current, buffer, min(data_len, (file_size - received_len))); // data_len includes padding
+        current += min(data_len, (file_size - received_len));
+        received_len += min(data_len, (file_size - received_len));
     } while (received_len < file_size);
     munmap(data, file_size);
     return file_size;
@@ -432,7 +438,7 @@ ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
     uint8_t header[11];
     header[0] = (MAGIC_NUMBER >> 8) & 0xFF;
     header[1] = MAGIC_NUMBER & 0xFF;
-    for (int i = 2; i < 11; i++) {
+    for (int i = 2; i < 10; i++) {
         header[i] = (file_size >> (8 * (10 - i))) & 0xFF;
     }
     
@@ -450,10 +456,10 @@ ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
 
     data_queue queue = {
         .buffer = queued_data,
-        .capacity = WINDOW_SIZE * PAYLOAD_SIZE,
+        .capacity = 1024,
         .count = 0,
         .head = 0,
-        .tail = queue.capacity
+        .tail = 0
     };
     pthread_mutex_init(&queue.lock, NULL);
 
@@ -463,9 +469,9 @@ ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
     send_packet(socket, dest_ip, packet, packet_size, &window, false);
 
     memcpy(&queue.buffer[queue.head], &data[current], min(64, file_size - current));
-    current += min(64, file_size - current);
     queue.head += min(64, file_size - current);
     queue.count += min(64, file_size - current);
+    current += min(64, file_size - current);
     payload_tunnel(socket, &queue, &window, dest_ip); // TODO: Loop memcpy and move this to separate thread.
     
     munmap((void*)data, file_size);
