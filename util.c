@@ -349,7 +349,10 @@ void resend_timeout(sliding_window *window, int socket) {
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
     while (true) {
         pthread_mutex_lock(&queue->lock);
-        if (queue->count > 0 && sem_trywait(&window->counter) == 0) {
+        while (queue->count == 0) {
+            pthread_cond_wait(&queue->data_available, &queue->lock);
+        }
+        if (sem_trywait(&window->counter) == 0) {
             uint8_t payload[PAYLOAD_SIZE];
             size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
             size_t first_chunk = min(bytes_to_copy, queue->capacity - queue->tail);
@@ -363,15 +366,13 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
             queue->count -= bytes_to_copy;
             queue->tail = (queue->tail + bytes_to_copy) % queue->capacity;
             pthread_mutex_unlock(&queue->lock);
+            pthread_cond_signal(&queue->space_available);
             size_t packet_size = 0;
             icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
             send_packet(socket, dest_ip, packet, packet_size, window, false);
             free(packet);
-        } else {
-            pthread_mutex_unlock(&queue->lock);
-            usleep(500000);
         }
-        resend_timeout(window, socket);
+        else pthread_mutex_unlock(&queue->lock);
     }
 }
 
@@ -429,7 +430,7 @@ ssize_t receive_file(int socket, char *out_file) {
     return file_size;
 }
 
-ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
+ssize_t send_file(const char *dest_ip, char *in_file) {
     const uint8_t *data = NULL;
     ssize_t file_size = read_map(in_file, &data);
     if (file_size < 0) return file_size;
@@ -462,18 +463,45 @@ ssize_t send_file(int socket, const char *dest_ip, char *in_file) {
         .tail = 0
     };
     pthread_mutex_init(&queue.lock, NULL);
+    pthread_cond_init(&queue.data_available, NULL);
+    pthread_cond_init(&queue.space_available, NULL);
 
+    int socketfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    
     // Send header
     size_t packet_size = 0;
     icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
-    send_packet(socket, dest_ip, packet, packet_size, &window, false);
+    send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
 
-    memcpy(&queue.buffer[queue.head], &data[current], min(64, file_size - current));
-    queue.head += min(64, file_size - current);
-    queue.count += min(64, file_size - current);
-    current += min(64, file_size - current);
-    payload_tunnel(socket, &queue, &window, dest_ip); // TODO: Loop memcpy and move this to separate thread.
-    
+    {
+        size_t to_copy = min(1024, (size_t)file_size - current);
+        size_t first_chunk = min(to_copy, queue.capacity - queue.head);
+        memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
+        if (first_chunk < to_copy)
+            memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
+        queue.head = (queue.head + to_copy) % queue.capacity;
+        queue.count += to_copy;
+        current += to_copy;
+    }
+    payload_tunnel(socketfd, &queue, &window, dest_ip); // TODO: Loop memcpy and move this to separate thread.
+    while (true) {
+        pthread_mutex_lock(&queue.lock);
+        while (queue.count > queue.capacity - PRODUCE_THRESHOLD) {
+            pthread_cond_wait(&queue.space_available, &queue.lock);
+        }
+        size_t free_space = queue.capacity - queue.count;
+        size_t to_copy = min(free_space, (size_t)file_size - current);
+        size_t first_chunk = min(to_copy, queue.capacity - queue.head);
+        memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
+        if (first_chunk < to_copy)
+            memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
+        queue.head = (queue.head + to_copy) % queue.capacity;
+        queue.count += to_copy;
+        current += to_copy;
+        pthread_cond_signal(&queue.data_available);
+        pthread_mutex_unlock(&queue.lock);
+    }
+
     munmap((void*)data, file_size);
     return file_size;
 }
