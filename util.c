@@ -44,6 +44,7 @@ int64_t read_map(const char *filename, const uint8_t** data){
     close(fd);
     if (map == MAP_FAILED) return -EIO;
     *data = map;
+    madvise(data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
 }
 
@@ -65,6 +66,7 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size){
     close(fd);
     if (map == MAP_FAILED) return -EIO;
     *data = map;
+    madvise(data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
 }
 
