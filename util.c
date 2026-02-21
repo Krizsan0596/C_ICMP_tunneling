@@ -360,9 +360,9 @@ void resend_timeout(sliding_window *window, int socket) {
 }
 
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
-    while (true) {
+    while (running) {
         pthread_mutex_lock(&queue->lock);
-        while (queue->count == 0) {
+        while (running && queue->count == 0) {
             pthread_cond_wait(&queue->data_available, &queue->lock);
         }
         if (sem_trywait(&window->counter) == 0) {
@@ -382,11 +382,12 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
             pthread_cond_signal(&queue->space_available);
             size_t packet_size = 0;
             icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
-            send_packet(socket, dest_ip, packet, packet_size, window, false);
+            while (running && send_packet(socket, dest_ip, packet, packet_size, window, false) <= 0);
             free(packet);
         }
         else pthread_mutex_unlock(&queue->lock);
     }
+    return 0;
 }
 
 ssize_t receive_payload(int socket, uint8_t *data, struct in_addr *source) {
@@ -439,7 +440,7 @@ ssize_t receive_file(int socket, char *out_file) {
         memcpy(current, buffer, min(data_len, (file_size - received_len))); // data_len includes padding
         current += min(data_len, (file_size - received_len));
         received_len += min(data_len, (file_size - received_len));
-    } while (received_len < file_size);
+    } while (running && received_len < file_size);
     msync(data, file_size, MS_SYNC);
     munmap(data, file_size);
     fsync(map_fd);
@@ -501,7 +502,7 @@ ssize_t send_file(const char *dest_ip, char *in_file) {
     current += to_copy;
 
     payload_tunnel(socketfd, &queue, &window, dest_ip);
-    while (true) {
+    while (running && current < file_size) {
         pthread_mutex_lock(&queue.lock);
         while (queue.count > queue.capacity - PRODUCE_THRESHOLD) {
             pthread_cond_wait(&queue.space_available, &queue.lock);

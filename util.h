@@ -10,6 +10,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <sys/time.h>
 
 #define PAYLOAD_SIZE 56
@@ -18,6 +19,8 @@
 #define PRODUCE_THRESHOLD 256 // Only load new data into the queue when there are 256 free bytes.
 #define MAGIC_NUMBER 0xBEEF // Placeholder, swap for unique.
 #define min(a, b) ((a) < (b) ? (a) : (b))
+
+extern volatile atomic_bool running;
 
 // Represents an ICMP echo packet with payload and metadata.
 typedef struct {
