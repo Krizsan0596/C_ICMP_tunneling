@@ -26,24 +26,30 @@
  * Returns the file size in bytes on success or a negative code on error.
  * Caller must munmap the returned pointer.
  */
-int64_t read_map(const char *filename, const uint8_t** data){
-    int fd = open(filename, O_RDONLY);
-    if (fd == -1) return -EIO;
+int64_t read_map(const char *filename, const uint8_t** data, int *fd){
+    *fd = open(filename, O_RDONLY);
+    if (*fd == -1) return -EIO;
     
     struct stat st;
-    if (fstat(fd, &st) == -1) {
-        close(fd);
+    if (fstat(*fd, &st) == -1) {
+        close(*fd);
+        *fd = -1;
         return -EIO;
     }
     uint64_t file_size = st.st_size;
     if (file_size == 0) {
-        close(fd);
+        close(*fd);
+        *fd = -1;
         return -EIO;
     }
-    void *map = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (map == MAP_FAILED) return -EIO;
+    void *map = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, *fd, 0);
+    if (map == MAP_FAILED) {
+        close(*fd);
+        *fd = -1;
+        return -EIO;
+    }
     *data = map;
+    posix_fadvise(*fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
     madvise(data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
 }
@@ -53,19 +59,24 @@ int64_t read_map(const char *filename, const uint8_t** data){
  * Returns the file size on success or negative error codes on failure.
  * Caller must munmap the returned pointer.
  */
-int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size){
-    int fd = open(filename, O_RDWR);
-    if (fd == -1) return -EIO;
+int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int *fd){
+    *fd = open(filename, O_RDWR);
+    if (*fd == -1) return -EIO;
     
-    if (ftruncate(fd, file_size) == -1) {
-        close(fd);
+    if (ftruncate(*fd, file_size) == -1) {
+        close(*fd);
+        *fd = -1;
         return -EIO;
     }
 
-    void *map = mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (map == MAP_FAILED) return -EIO;
+    void *map = mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_SHARED, *fd, 0);
+    if (map == MAP_FAILED) {
+        close(*fd);
+        *fd = -1;
+        return -EIO;
+    }
     *data = map;
+    posix_fadvise(*fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
     madvise(data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
 }
@@ -406,6 +417,7 @@ ssize_t receive_file(int socket, char *out_file) {
     uint8_t *current = NULL;
     uint64_t received_len = 0;
     uint64_t file_size = 0;
+    int map_fd = -1;
     do {
         uint8_t buffer[1024];
         ssize_t data_len = receive_payload(socket, buffer, &source);
@@ -419,7 +431,7 @@ ssize_t receive_file(int socket, char *out_file) {
             for (int i = 2; i < 10; i++) {
                 file_size = (file_size << 8) | buffer[i]; // Sender has to transmit magic number + file size before the actual file.
             }
-            if(write_map(out_file, &data, file_size) <= 0) return -1;
+            if(write_map(out_file, &data, file_size, &map_fd) <= 0) return -1;
             current = data;
             source_locked = true;
             continue;
@@ -428,13 +440,17 @@ ssize_t receive_file(int socket, char *out_file) {
         current += min(data_len, (file_size - received_len));
         received_len += min(data_len, (file_size - received_len));
     } while (received_len < file_size);
+    msync(data, file_size, MS_SYNC);
     munmap(data, file_size);
+    fsync(map_fd);
+    close(map_fd);
     return file_size;
 }
 
 ssize_t send_file(const char *dest_ip, char *in_file) {
     const uint8_t *data = NULL;
-    ssize_t file_size = read_map(in_file, &data);
+    int map_fd = -1;
+    ssize_t file_size = read_map(in_file, &data, &map_fd);
     if (file_size < 0) return file_size;
     size_t current = 0;
 
@@ -475,17 +491,16 @@ ssize_t send_file(const char *dest_ip, char *in_file) {
     icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
     send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
 
-    {
-        size_t to_copy = min(1024, (size_t)file_size - current);
-        size_t first_chunk = min(to_copy, queue.capacity - queue.head);
-        memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
-        if (first_chunk < to_copy)
-            memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
-        queue.head = (queue.head + to_copy) % queue.capacity;
-        queue.count += to_copy;
-        current += to_copy;
-    }
-    payload_tunnel(socketfd, &queue, &window, dest_ip); // TODO: Loop memcpy and move this to separate thread.
+    size_t to_copy = min(1024, (size_t)file_size - current);
+    size_t first_chunk = min(to_copy, queue.capacity - queue.head);
+    memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
+    if (first_chunk < to_copy)
+        memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
+    queue.head = (queue.head + to_copy) % queue.capacity;
+    queue.count += to_copy;
+    current += to_copy;
+
+    payload_tunnel(socketfd, &queue, &window, dest_ip);
     while (true) {
         pthread_mutex_lock(&queue.lock);
         while (queue.count > queue.capacity - PRODUCE_THRESHOLD) {
@@ -503,7 +518,9 @@ ssize_t send_file(const char *dest_ip, char *in_file) {
         pthread_cond_signal(&queue.data_available);
         pthread_mutex_unlock(&queue.lock);
     }
+    resend_timeout(&window, socketfd);
 
     munmap((void*)data, file_size);
+    close(map_fd);
     return file_size;
 }
