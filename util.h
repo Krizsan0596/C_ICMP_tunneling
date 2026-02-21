@@ -15,6 +15,7 @@
 #define PAYLOAD_SIZE 56
 #define WINDOW_SIZE 5
 #define TIMEOUT 5
+#define PRODUCE_THRESHOLD 256 // Only load new data into the queue when there are 256 free bytes.
 #define MAGIC_NUMBER 0xBEEF // Placeholder, swap for unique.
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
@@ -54,6 +55,8 @@ typedef struct {
     size_t tail;
     size_t count;
     pthread_mutex_t lock;
+    pthread_cond_t data_available;
+    pthread_cond_t space_available;
 } data_queue;
 
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
