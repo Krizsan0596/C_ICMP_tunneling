@@ -33,7 +33,7 @@ typedef struct {
 // Tracks a sent packet's state for retransmission and acknowledgement.
 typedef struct {
     icmp_packet packet;
-    struct timeval timeout_time;
+    struct timespec timeout_time;
     size_t packet_size;
     bool in_use;
     bool acknowledged;
@@ -48,6 +48,7 @@ typedef struct {
     uint64_t next_sequence;
     pthread_mutex_t lock;
     sem_t counter;
+    pthread_cond_t ack;
 } sliding_window;
 
 // Queue for data to be sent by the sender
@@ -62,9 +63,24 @@ typedef struct {
     pthread_cond_t space_available;
 } data_queue;
 
+typedef enum {
+    SENDER, LISTENER, RESENDER, WRAPPER
+} thread_func;
+
+typedef struct {
+    thread_func task;
+    int socket;
+    const char *dest_ip;
+    const char *file;
+    sliding_window *window;
+    data_queue *queue;
+} thread_args;
+
 icmp_packet* generate_custom_ping_packet(uint16_t id, uint16_t sequence, uint8_t ttl, const uint8_t *payload, size_t payload_len, size_t *packet_size);
 int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t packet_size, sliding_window *window, bool resend);
 int listen_for_reply(int socket, sliding_window *window);
 void resend_timeout(sliding_window *window, int socket);
+int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip);
+ssize_t send_file(const char *dest_ip, const char *in_file);
 
 #endif
