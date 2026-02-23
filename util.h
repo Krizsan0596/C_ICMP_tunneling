@@ -20,7 +20,16 @@
 #define MAGIC_NUMBER 0xBEEF // Placeholder, swap for unique.
 #define min(a, b) ((a) < (b) ? (a) : (b))
 
-extern volatile atomic_bool running;
+typedef enum {
+    RUNNING,
+    DATA_QUEUED,
+    DATA_SENT,
+    DATA_RECVD,
+    FINISHED,
+    ABORT
+} program_state;
+
+extern volatile _Atomic program_state state;
 
 // Represents an ICMP echo packet with payload and metadata.
 typedef struct {
