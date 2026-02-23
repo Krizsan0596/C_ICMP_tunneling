@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <fcntl.h>
+#include <poll.h>
 
 /*
  * Reads from a file into memory (mmap).
@@ -339,9 +340,17 @@ int validate_reply(uint8_t *buffer, size_t buffer_len, tracked_packet *queue, ui
 }
 
 ssize_t receive_packet(int socket, uint8_t *buffer, size_t buffer_size) {
+    struct pollfd pfd = { .fd = socket, .events = POLLIN };
+    int ret = poll(&pfd, 1, 100); // 100ms timeout
+    if (ret < 0) {
+        if (errno == EINTR) return 0;
+        fprintf(stderr, "poll failed.\n");
+        return -EIO;
+    }
+    if (ret == 0) return 0; // Timeout, no data available
+
     struct sockaddr_in src_addr;
     socklen_t addr_len = sizeof(src_addr);
-    
     ssize_t bytes_received = recvfrom(socket, buffer, buffer_size, 0, (struct sockaddr*)&src_addr, &addr_len);
     if (bytes_received < 0) {
         fprintf(stderr, "Receiving failed.\n");
@@ -359,6 +368,7 @@ int listen_for_reply(int socket, sliding_window *window) {
         if (bytes_received < 0) {
             return bytes_received;
         }
+        if (bytes_received == 0) continue; // Poll timeout, no data
 
         pthread_mutex_lock(&window->lock);
         int is_valid = validate_reply(buffer, bytes_received, window->queue, window->tail, window->count);
@@ -591,6 +601,6 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     pthread_cond_destroy(&queue.space_available);
     pthread_cond_destroy(&window.ack);
     sem_destroy(&window.counter);
-    shutdown(socketfd, SHUT_RD);
+    close(socketfd);
     return file_size;
 }
