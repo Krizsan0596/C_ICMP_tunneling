@@ -1,4 +1,5 @@
 #include "util.h"
+#include <bits/pthreadtypes.h>
 #include <bits/time.h>
 #include <errno.h>
 #include <netinet/in.h>
@@ -79,6 +80,36 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int 
     posix_fadvise(*fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
     madvise(data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
+}
+
+// Wrapper function for pthreads threading.
+void* start_thread(void *args) {
+    thread_args opts = *(thread_args *)args;
+    switch (opts.task){
+        case WRAPPER:
+            {
+                ssize_t *file_size = malloc(sizeof(ssize_t));
+                *file_size = send_file(opts.dest_ip, opts.file);
+                return file_size;
+            }
+        case SENDER:
+            {
+                int *ret = malloc(sizeof(int));
+                *ret = payload_tunnel(opts.socket, opts.queue, opts.window, opts.dest_ip);
+                return ret;
+            }
+        case LISTENER:
+            {
+                int *ret = malloc(sizeof(int));
+                *ret = listen_for_reply(opts.socket, opts.window);
+                return ret;
+            }
+        case RESENDER:
+            {
+               resend_timeout(opts.window, opts.socket);
+               return NULL;
+            }
+    }
 }
 
 unsigned short calculate_checksum(unsigned short *data, int len) {
@@ -511,7 +542,29 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     queue.count += to_copy;
     current += to_copy;
 
-    payload_tunnel(socketfd, &queue, &window, dest_ip);
+    pthread_t tunnel_thread;
+    thread_args *tunnel_args = malloc(sizeof(thread_args));
+    tunnel_args->queue = &queue;
+    tunnel_args->window = &window;
+    tunnel_args->dest_ip = dest_ip;
+    tunnel_args->socket = socketfd;
+    tunnel_args->task = SENDER;
+    pthread_create(&tunnel_thread, NULL, start_thread, tunnel_args);
+
+    pthread_t resend_thread;
+    thread_args *resend_args = malloc(sizeof(thread_args));
+    resend_args->window = &window;
+    resend_args->socket = socketfd;
+    resend_args->task = RESENDER;
+    pthread_create(&resend_thread, NULL, start_thread, resend_args);
+
+    pthread_t listen_thread;
+    thread_args *listen_args = malloc(sizeof(thread_args));
+    listen_args->socket = socketfd;
+    listen_args->window = &window;
+    listen_args->task = LISTENER;
+    pthread_create(&listen_thread, NULL, start_thread, listen_args);
+
     while (running && current < file_size) {
         pthread_mutex_lock(&queue.lock);
         while (queue.count > queue.capacity - PRODUCE_THRESHOLD) {
@@ -529,7 +582,6 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
         pthread_cond_signal(&queue.data_available);
         pthread_mutex_unlock(&queue.lock);
     }
-    resend_timeout(&window, socketfd);
 
     munmap((void*)data, file_size);
     close(map_fd);
@@ -541,33 +593,4 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     sem_destroy(&window.counter);
     shutdown(socketfd, SHUT_RD);
     return file_size;
-}
-
-void* start_thread(void *args) {
-    thread_args opts = *(thread_args *)args;
-    switch (opts.task){
-        case WRAPPER:
-            {
-                ssize_t *file_size = malloc(sizeof(ssize_t));
-                *file_size = send_file(opts.dest_ip, opts.file);
-                return file_size;
-            }
-        case SENDER:
-            {
-                int *ret = malloc(sizeof(int));
-                *ret = payload_tunnel(opts.socket, opts.queue, opts.window, opts.dest_ip);
-                return ret;
-            }
-        case LISTENER:
-            {
-                int *ret = malloc(sizeof(int));
-                *ret = listen_for_reply(opts.socket, opts.window);
-                return ret;
-            }
-        case RESENDER:
-            {
-               resend_timeout(opts.window, opts.socket);
-               return NULL;
-            }
-    }
 }
