@@ -224,7 +224,7 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
         tracked.packet_size = packet_size;
         tracked.in_use = true;
         tracked.acknowledged = false;
-        gettimeofday(&tracked.timeout_time, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &tracked.timeout_time);
         tracked.timeout_time.tv_sec += TIMEOUT;
         window->queue[window->head] = tracked;
         window->head = (window->head + 1) % WINDOW_SIZE;
@@ -236,7 +236,7 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
             int idx = (window->tail + i) % WINDOW_SIZE;
             pthread_mutex_lock(&window->lock);
             if (memcmp(&window->queue[idx].packet, packet, sizeof(icmp_packet)) == 0) {
-                gettimeofday(&window->queue[idx].timeout_time, NULL); 
+                clock_gettime(CLOCK_MONOTONIC, &window->queue[idx].timeout_time);
                 break;
             }
             pthread_mutex_unlock(&window->lock);
@@ -321,42 +321,51 @@ ssize_t receive_packet(int socket, uint8_t *buffer, size_t buffer_size) {
 
 // Receive a reply and update the retransmit window when an ACK is found.
 int listen_for_reply(int socket, sliding_window *window) {
-    uint8_t buffer[1024];
-    
-    ssize_t bytes_received = receive_packet(socket, buffer, sizeof(buffer));
-    if (bytes_received < 0) {
-        return bytes_received;
+    while (running) {
+        uint8_t buffer[1024];
+        
+        ssize_t bytes_received = receive_packet(socket, buffer, sizeof(buffer));
+        if (bytes_received < 0) {
+            return bytes_received;
+        }
+
+        pthread_mutex_lock(&window->lock);
+        int is_valid = validate_reply(buffer, bytes_received, window->queue, window->tail, window->count);
+
+        if (is_valid < 0) continue; // Ignored or corrupted packet, do nothing.
+        
+        window->queue[is_valid].acknowledged = true;
+        pthread_mutex_unlock(&window->lock);
+        
+        // Slide the window to advance and make room for new packets.
+        slide_window(window);
+        pthread_cond_signal(&window->ack);
     }
 
-    pthread_mutex_lock(&window->lock);
-    int is_valid = validate_reply(buffer, bytes_received, window->queue, window->tail, window->count);
-
-    if (is_valid < 0) return -1; // Ignored or corrupted packet, do nothing.
-    
-    window->queue[is_valid].acknowledged = true;
-    pthread_mutex_unlock(&window->lock);
-    
-    // Slide the window to advance and make room for new packets.
-    slide_window(window);
-    
     return 0;
 }
 
 // Resend any queued packets that exceed the TIMEOUT threshold.
 void resend_timeout(sliding_window *window, int socket) {
-    struct timeval current_time;
-    gettimeofday(&current_time, NULL);
-    pthread_mutex_lock(&window->lock);
-    for (int i = 0; i < window->count; i++) {
-        int idx = (window->tail + i) % WINDOW_SIZE;
-        if (window->queue[idx].in_use && !window->queue[idx].acknowledged &&
-            current_time.tv_sec > window->queue[idx].timeout_time.tv_sec) {
-            pthread_mutex_unlock(&window->lock);
-            send_packet(socket, window->queue[idx].packet.dest_ip, &window->queue[idx].packet, window->queue[idx].packet_size, window, true);
-            pthread_mutex_lock(&window->lock);
+    while (running){
+        struct timespec soonest_timeout;
+        struct timespec current_time;
+        clock_gettime(CLOCK_MONOTONIC, &current_time);
+        pthread_mutex_lock(&window->lock);
+        for (int i = 0; i < window->count; i++) {
+            int idx = (window->tail + i) % WINDOW_SIZE;
+            if (window->queue[idx].in_use && !window->queue[idx].acknowledged) {
+                if (current_time.tv_sec > window->queue[idx].timeout_time.tv_sec) {
+                    pthread_mutex_unlock(&window->lock);
+                    send_packet(socket, window->queue[idx].packet.dest_ip, &window->queue[idx].packet, window->queue[idx].packet_size, window, true);
+                    pthread_mutex_lock(&window->lock);
+                }
+                else if (window->queue[idx].timeout_time.tv_sec < soonest_timeout.tv_sec || (window->queue[idx].timeout_time.tv_sec == soonest_timeout.tv_sec && window->queue[idx].timeout_time.tv_nsec < soonest_timeout.tv_nsec)) soonest_timeout = window->queue[idx].timeout_time;
+            }
         }
+        pthread_cond_timedwait(&window->ack, &window->lock, &soonest_timeout);
+        pthread_mutex_unlock(&window->lock);
     }
-    pthread_mutex_unlock(&window->lock);
 }
 
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
@@ -448,7 +457,7 @@ ssize_t receive_file(int socket, char *out_file) {
     return file_size;
 }
 
-ssize_t send_file(const char *dest_ip, char *in_file) {
+ssize_t send_file(const char *dest_ip, const char *in_file) {
     const uint8_t *data = NULL;
     int map_fd = -1;
     ssize_t file_size = read_map(in_file, &data, &map_fd);
@@ -471,6 +480,7 @@ ssize_t send_file(const char *dest_ip, char *in_file) {
     };
     pthread_mutex_init(&window.lock, NULL);
     sem_init(&window.counter, 0, 5);
+    pthread_cond_init(&window.ack, NULL);
 
     uint8_t queued_data[1024] = {0};
 
@@ -523,5 +533,41 @@ ssize_t send_file(const char *dest_ip, char *in_file) {
 
     munmap((void*)data, file_size);
     close(map_fd);
+    pthread_mutex_destroy(&queue.lock);
+    pthread_mutex_destroy(&window.lock);
+    pthread_cond_destroy(&queue.data_available);
+    pthread_cond_destroy(&queue.space_available);
+    pthread_cond_destroy(&window.ack);
+    sem_destroy(&window.counter);
+    shutdown(socketfd, SHUT_RD);
     return file_size;
+}
+
+void* start_thread(void *args) {
+    thread_args opts = *(thread_args *)args;
+    switch (opts.task){
+        case WRAPPER:
+            {
+                ssize_t *file_size = malloc(sizeof(ssize_t));
+                *file_size = send_file(opts.dest_ip, opts.file);
+                return file_size;
+            }
+        case SENDER:
+            {
+                int *ret = malloc(sizeof(int));
+                *ret = payload_tunnel(opts.socket, opts.queue, opts.window, opts.dest_ip);
+                return ret;
+            }
+        case LISTENER:
+            {
+                int *ret = malloc(sizeof(int));
+                *ret = listen_for_reply(opts.socket, opts.window);
+                return ret;
+            }
+        case RESENDER:
+            {
+               resend_timeout(opts.window, opts.socket);
+               return NULL;
+            }
+    }
 }
