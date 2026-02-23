@@ -361,7 +361,7 @@ ssize_t receive_packet(int socket, uint8_t *buffer, size_t buffer_size) {
 
 // Receive a reply and update the retransmit window when an ACK is found.
 int listen_for_reply(int socket, sliding_window *window) {
-    while (running) {
+    while (state != ABORT && state != DATA_RECVD) {
         uint8_t buffer[1024];
         
         ssize_t bytes_received = receive_packet(socket, buffer, sizeof(buffer));
@@ -381,6 +381,8 @@ int listen_for_reply(int socket, sliding_window *window) {
         // Slide the window to advance and make room for new packets.
         slide_window(window);
         pthread_cond_signal(&window->ack);
+
+        if (state == DATA_SENT && window->count == 0) state = DATA_RECVD;
     }
 
     return 0;
@@ -388,7 +390,7 @@ int listen_for_reply(int socket, sliding_window *window) {
 
 // Resend any queued packets that exceed the TIMEOUT threshold.
 void resend_timeout(sliding_window *window, int socket) {
-    while (running){
+    while (state != ABORT && state != DATA_RECVD){
         struct timespec soonest_timeout;
         struct timespec current_time;
         clock_gettime(CLOCK_MONOTONIC, &current_time);
@@ -407,12 +409,13 @@ void resend_timeout(sliding_window *window, int socket) {
         pthread_cond_timedwait(&window->ack, &window->lock, &soonest_timeout);
         pthread_mutex_unlock(&window->lock);
     }
+    state = FINISHED;
 }
 
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
-    while (running) {
+    while (state != ABORT && state != DATA_SENT) {
         pthread_mutex_lock(&queue->lock);
-        while (running && queue->count == 0) {
+        while (state != ABORT && queue->count == 0) {
             pthread_cond_wait(&queue->data_available, &queue->lock);
         }
         if (sem_trywait(&window->counter) == 0) {
@@ -432,10 +435,12 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
             pthread_cond_signal(&queue->space_available);
             size_t packet_size = 0;
             icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
-            while (running && send_packet(socket, dest_ip, packet, packet_size, window, false) <= 0);
+            while (state != ABORT && send_packet(socket, dest_ip, packet, packet_size, window, false) <= 0);
             free(packet);
         }
         else pthread_mutex_unlock(&queue->lock);
+
+        if (state == DATA_QUEUED && queue->count == 0) state = DATA_SENT;
     }
     return 0;
 }
@@ -490,7 +495,7 @@ ssize_t receive_file(int socket, char *out_file) {
         memcpy(current, buffer, min(data_len, (file_size - received_len))); // data_len includes padding
         current += min(data_len, (file_size - received_len));
         received_len += min(data_len, (file_size - received_len));
-    } while (running && received_len < file_size);
+    } while (state != ABORT && received_len < file_size);
     msync(data, file_size, MS_SYNC);
     munmap(data, file_size);
     fsync(map_fd);
@@ -552,14 +557,14 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     queue.count += to_copy;
     current += to_copy;
 
-    pthread_t tunnel_thread;
-    thread_args *tunnel_args = malloc(sizeof(thread_args));
-    tunnel_args->queue = &queue;
-    tunnel_args->window = &window;
-    tunnel_args->dest_ip = dest_ip;
-    tunnel_args->socket = socketfd;
-    tunnel_args->task = SENDER;
-    pthread_create(&tunnel_thread, NULL, start_thread, tunnel_args);
+    pthread_t sender_thread;
+    thread_args *sender_args = malloc(sizeof(thread_args));
+    sender_args->queue = &queue;
+    sender_args->window = &window;
+    sender_args->dest_ip = dest_ip;
+    sender_args->socket = socketfd;
+    sender_args->task = SENDER;
+    pthread_create(&sender_thread, NULL, start_thread, sender_args);
 
     pthread_t resend_thread;
     thread_args *resend_args = malloc(sizeof(thread_args));
@@ -575,7 +580,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     listen_args->task = LISTENER;
     pthread_create(&listen_thread, NULL, start_thread, listen_args);
 
-    while (running && current < file_size) {
+    while (state != ABORT && current < file_size) {
         pthread_mutex_lock(&queue.lock);
         while (queue.count > queue.capacity - PRODUCE_THRESHOLD) {
             pthread_cond_wait(&queue.space_available, &queue.lock);
@@ -592,6 +597,23 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
         pthread_cond_signal(&queue.data_available);
         pthread_mutex_unlock(&queue.lock);
     }
+    state = DATA_QUEUED;
+
+    int *sender_ret;
+    pthread_join(sender_thread, (void**)&sender_ret);
+    if (*sender_ret != 0) fprintf(stderr, "Sender error.");
+    free(sender_ret);
+
+    int *listener_ret;
+    pthread_join(listen_thread, (void**)&listener_ret);
+    if (*listener_ret != 0) fprintf(stderr, "Listener error.");
+    free(listener_ret);
+
+    pthread_join(resend_thread, NULL);
+
+    free(sender_args);
+    free(listen_args);
+    free(resend_args);
 
     munmap((void*)data, file_size);
     close(map_fd);
