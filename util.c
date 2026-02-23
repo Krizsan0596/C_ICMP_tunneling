@@ -62,7 +62,7 @@ int64_t read_map(const char *filename, const uint8_t** data, int *fd){
  * Caller must munmap the returned pointer.
  */
 int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int *fd){
-    *fd = open(filename, O_RDWR);
+    *fd = open(filename, O_RDWR | O_CREAT, 0644);
     if (*fd == -1) return -EIO;
     
     if (ftruncate(*fd, file_size) == -1) {
@@ -261,6 +261,7 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
         window->queue[window->head] = tracked;
         window->head = (window->head + 1) % WINDOW_SIZE;
         window->count++;
+        window->next_sequence++;
         pthread_mutex_unlock(&window->lock);
     }
     else {
@@ -418,34 +419,32 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
         while (state != ABORT && queue->count == 0) {
             pthread_cond_wait(&queue->data_available, &queue->lock);
         }
-        if (sem_trywait(&window->counter) == 0) {
-            uint8_t payload[PAYLOAD_SIZE];
-            size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
-            size_t first_chunk = min(bytes_to_copy, queue->capacity - queue->tail);
-            memcpy(payload, &queue->buffer[queue->tail], first_chunk);
-            if (first_chunk < bytes_to_copy) {
-                memcpy(payload + first_chunk, queue->buffer, bytes_to_copy - first_chunk);
-            }
-            if (bytes_to_copy < PAYLOAD_SIZE) {
-                memset(payload + bytes_to_copy, 0, PAYLOAD_SIZE - bytes_to_copy);
-            }
-            queue->count -= bytes_to_copy;
-            queue->tail = (queue->tail + bytes_to_copy) % queue->capacity;
-            pthread_mutex_unlock(&queue->lock);
-            pthread_cond_signal(&queue->space_available);
-            size_t packet_size = 0;
-            icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
-            while (state != ABORT && send_packet(socket, dest_ip, packet, packet_size, window, false) <= 0);
-            free(packet);
+        sem_wait(&window->counter);
+        uint8_t payload[PAYLOAD_SIZE];
+        size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
+        size_t first_chunk = min(bytes_to_copy, queue->capacity - queue->tail);
+        memcpy(payload, &queue->buffer[queue->tail], first_chunk);
+        if (first_chunk < bytes_to_copy) {
+            memcpy(payload + first_chunk, queue->buffer, bytes_to_copy - first_chunk);
         }
-        else pthread_mutex_unlock(&queue->lock);
+        if (bytes_to_copy < PAYLOAD_SIZE) {
+            memset(payload + bytes_to_copy, 0, PAYLOAD_SIZE - bytes_to_copy);
+        }
+        queue->count -= bytes_to_copy;
+        queue->tail = (queue->tail + bytes_to_copy) % queue->capacity;
+        pthread_mutex_unlock(&queue->lock);
+        pthread_cond_signal(&queue->space_available);
+        size_t packet_size = 0;
+        icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window->next_sequence, 64, payload, PAYLOAD_SIZE, &packet_size);
+        while (state != ABORT && send_packet(socket, dest_ip, packet, packet_size, window, false) <= 0);
+        free(packet);
 
         if (state == DATA_QUEUED && queue->count == 0) state = DATA_SENT;
     }
     return 0;
 }
 
-ssize_t receive_payload(int socket, uint8_t *data, struct in_addr *source) {
+ssize_t receive_payload(int socket, uint8_t *data, uint16_t *sequence, struct in_addr *source) {
     uint8_t buffer[1024];
     memset(buffer, 0, sizeof(buffer));
     size_t buffer_size = receive_packet(socket, buffer, sizeof(buffer));
@@ -458,6 +457,7 @@ ssize_t receive_payload(int socket, uint8_t *data, struct in_addr *source) {
     if (source->s_addr != 0 && memcmp(source, &src_addr, sizeof(struct in_addr)) != 0) return -1; // Not a packet from known tunnel source.
     uint8_t *packet = buffer + ip_header_len;
     if (calculate_checksum((unsigned short *)packet, buffer_size - ip_header_len) != 0) return -2; // Incorrect checksum, broken data
+    *sequence = ntohs(((struct icmphdr*) packet)->un.echo.sequence);
     uint8_t *payload = packet + sizeof(struct icmphdr);
     size_t payload_len = buffer_size - (ip_header_len + sizeof(struct icmphdr));
     if (payload_len != PAYLOAD_SIZE) return -2; // Not packet from tunnel
@@ -470,13 +470,14 @@ ssize_t receive_file(int socket, char *out_file) {
     struct in_addr source = {0};
     bool source_locked = false;
     uint8_t *data = NULL;
-    uint8_t *current = NULL;
     uint64_t received_len = 0;
     uint64_t file_size = 0;
+    bool *recvd_sequences;
     int map_fd = -1;
     do {
         uint8_t buffer[1024];
-        ssize_t data_len = receive_payload(socket, buffer, &source);
+        uint16_t sequence;
+        ssize_t data_len = receive_payload(socket, buffer, &sequence, &source);
         if (data_len < 0) continue;
         if (!source_locked) {
             uint8_t magic[2] = { (MAGIC_NUMBER >> 8) & 0xFF, MAGIC_NUMBER & 0xFF };
@@ -485,15 +486,17 @@ ssize_t receive_file(int socket, char *out_file) {
                 continue;
             }
             for (int i = 2; i < 10; i++) {
-                file_size = (file_size << 8) | buffer[i]; // Sender has to transmit magic number + file size before the actual file.
+                file_size = (file_size << 8) | buffer[i];
             }
             if(write_map(out_file, &data, file_size, &map_fd) <= 0) return -1;
-            current = data;
+            recvd_sequences = calloc((file_size / PAYLOAD_SIZE), sizeof(bool));
             source_locked = true;
             continue;
         }
-        memcpy(current, buffer, min(data_len, (file_size - received_len))); // data_len includes padding
-        current += min(data_len, (file_size - received_len));
+        sequence -= 2; // Sequence starts at 1, first packet is header. First data packet is sequence 2.
+        if (recvd_sequences[sequence]) continue;
+        memcpy(&data[sequence * PAYLOAD_SIZE], buffer, min(data_len, (file_size - sequence * PAYLOAD_SIZE))); // data_len includes padding
+        recvd_sequences[sequence] = true;
         received_len += min(data_len, (file_size - received_len));
     } while (state != ABORT && received_len < file_size);
     msync(data, file_size, MS_SYNC);
@@ -514,7 +517,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     header[0] = (MAGIC_NUMBER >> 8) & 0xFF;
     header[1] = MAGIC_NUMBER & 0xFF;
     for (int i = 2; i < 10; i++) {
-        header[i] = (file_size >> (8 * (10 - i))) & 0xFF;
+        header[i] = (file_size >> (8 * (9 - i))) & 0xFF;
     }
     
     sliding_window window = {
