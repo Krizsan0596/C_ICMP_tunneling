@@ -424,11 +424,11 @@ void resend_timeout(sliding_window *window, int socket) {
 
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
     while (state != ABORT && state != DATA_SENT) {
+        sem_wait(&window->counter);
         pthread_mutex_lock(&queue->lock);
         while (state != ABORT && queue->count == 0) {
             pthread_cond_wait(&queue->data_available, &queue->lock);
         }
-        sem_wait(&window->counter);
         uint8_t payload[PAYLOAD_SIZE];
         size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
         size_t first_chunk = min(bytes_to_copy, queue->capacity - queue->tail);
@@ -539,7 +539,10 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     };
     pthread_mutex_init(&window.lock, NULL);
     sem_init(&window.counter, 0, 5);
-    pthread_cond_init(&window.ack, NULL);
+    pthread_condattr_t cattr;
+    pthread_condattr_init(&cattr);
+    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC_RAW);
+    pthread_cond_init(&window.ack, &cattr);
 
     uint8_t queued_data[1024] = {0};
 
