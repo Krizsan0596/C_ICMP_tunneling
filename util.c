@@ -489,10 +489,11 @@ ssize_t receive_file(int socket, char *out_file) {
                 file_size = (file_size << 8) | buffer[i];
             }
             if(write_map(out_file, &data, file_size, &map_fd) <= 0) return -1;
-            recvd_sequences = calloc((file_size / PAYLOAD_SIZE), sizeof(bool));
+            recvd_sequences = calloc(((file_size + PAYLOAD_SIZE - 1)/ PAYLOAD_SIZE), sizeof(bool));
             source_locked = true;
             continue;
         }
+        if (sequence < 2) continue; // retransmitted header, ACK was dropped, avoids integer underflow.
         sequence -= 2; // Sequence starts at 1, first packet is header. First data packet is sequence 2.
         if (recvd_sequences[sequence]) continue;
         memcpy(&data[sequence * PAYLOAD_SIZE], buffer, min(data_len, (file_size - sequence * PAYLOAD_SIZE))); // data_len includes padding
@@ -546,29 +547,6 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
 
     int socketfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     
-    // Send header
-    size_t packet_size = 0;
-    icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
-    send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
-
-    size_t to_copy = min(1024, (size_t)file_size - current);
-    size_t first_chunk = min(to_copy, queue.capacity - queue.head);
-    memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
-    if (first_chunk < to_copy)
-        memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
-    queue.head = (queue.head + to_copy) % queue.capacity;
-    queue.count += to_copy;
-    current += to_copy;
-
-    pthread_t sender_thread;
-    thread_args *sender_args = malloc(sizeof(thread_args));
-    sender_args->queue = &queue;
-    sender_args->window = &window;
-    sender_args->dest_ip = dest_ip;
-    sender_args->socket = socketfd;
-    sender_args->task = SENDER;
-    pthread_create(&sender_thread, NULL, start_thread, sender_args);
-
     pthread_t resend_thread;
     thread_args *resend_args = malloc(sizeof(thread_args));
     resend_args->window = &window;
@@ -582,6 +560,35 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     listen_args->window = &window;
     listen_args->task = LISTENER;
     pthread_create(&listen_thread, NULL, start_thread, listen_args);
+
+    pthread_t sender_thread;
+    thread_args *sender_args = malloc(sizeof(thread_args));
+    sender_args->queue = &queue;
+    sender_args->window = &window;
+    sender_args->dest_ip = dest_ip;
+    sender_args->socket = socketfd;
+    sender_args->task = SENDER;
+    pthread_create(&sender_thread, NULL, start_thread, sender_args);
+
+    // Send header
+    size_t packet_size = 0;
+    icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
+    send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
+
+    // Wait until the header is acknowledged before queuing any data.
+    pthread_mutex_lock(&window.lock);
+    while (state != ABORT && window.count > 0)
+        pthread_cond_wait(&window.ack, &window.lock);
+    pthread_mutex_unlock(&window.lock);
+
+    size_t to_copy = min(1024, (size_t)file_size - current);
+    size_t first_chunk = min(to_copy, queue.capacity - queue.head);
+    memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
+    if (first_chunk < to_copy)
+        memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
+    queue.head = (queue.head + to_copy) % queue.capacity;
+    queue.count += to_copy;
+    current += to_copy;
 
     while (state != ABORT && current < file_size) {
         pthread_mutex_lock(&queue.lock);
@@ -601,6 +608,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
         pthread_mutex_unlock(&queue.lock);
     }
     state = DATA_QUEUED;
+    pthread_cond_signal(&queue.data_available);
 
     int *sender_ret;
     pthread_join(sender_thread, (void**)&sender_ret);
