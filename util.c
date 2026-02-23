@@ -270,9 +270,9 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
             pthread_mutex_lock(&window->lock);
             if (memcmp(&window->queue[idx].packet, packet, sizeof(icmp_packet)) == 0) {
                 clock_gettime(CLOCK_MONOTONIC, &window->queue[idx].timeout_time);
+                pthread_mutex_unlock(&window->lock);
                 break;
             }
-            pthread_mutex_unlock(&window->lock);
         }
     }
 
@@ -395,6 +395,9 @@ void resend_timeout(sliding_window *window, int socket) {
         struct timespec soonest_timeout;
         struct timespec current_time;
         clock_gettime(CLOCK_MONOTONIC, &current_time);
+        soonest_timeout = current_time;
+        soonest_timeout.tv_sec += TIMEOUT;
+        bool packet_resent = false;
         pthread_mutex_lock(&window->lock);
         for (int i = 0; i < window->count; i++) {
             int idx = (window->tail + i) % WINDOW_SIZE;
@@ -403,9 +406,15 @@ void resend_timeout(sliding_window *window, int socket) {
                     pthread_mutex_unlock(&window->lock);
                     send_packet(socket, window->queue[idx].packet.dest_ip, &window->queue[idx].packet, window->queue[idx].packet_size, window, true);
                     pthread_mutex_lock(&window->lock);
+                    packet_resent = true;
+                    break; // Window could have changed because of dropped lock
                 }
                 else if (window->queue[idx].timeout_time.tv_sec < soonest_timeout.tv_sec || (window->queue[idx].timeout_time.tv_sec == soonest_timeout.tv_sec && window->queue[idx].timeout_time.tv_nsec < soonest_timeout.tv_nsec)) soonest_timeout = window->queue[idx].timeout_time;
             }
+        }
+        if (packet_resent) {
+            pthread_mutex_unlock(&window->lock);
+            continue;
         }
         pthread_cond_timedwait(&window->ack, &window->lock, &soonest_timeout);
         pthread_mutex_unlock(&window->lock);
