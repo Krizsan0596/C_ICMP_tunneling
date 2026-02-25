@@ -1,4 +1,4 @@
-#include "receiver.h"
+#include "../lib/receiver.h"
 #include <stdio.h>
 #include <unistd.h>
 
