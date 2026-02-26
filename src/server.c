@@ -43,10 +43,8 @@ int main(int argc, char **argv) {
 
     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
-    while (state != ABORT && state != FINISHED) {
-        pthread_join(producer_thread, (void **)&file_size);
-        free(file_size);
-    }
+    pthread_join(producer_thread, (void **)&file_size);
+    free(file_size);
     free(producer_args);
 
     return 0;
