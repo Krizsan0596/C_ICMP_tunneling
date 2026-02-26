@@ -418,6 +418,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     pthread_condattr_init(&cattr);
     pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
     pthread_cond_init(&window.ack, &cattr);
+    pthread_condattr_destroy(&cattr);
 
     uint8_t queued_data[1024] = {0};
 
@@ -439,26 +440,47 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     }
     pthread_t resend_thread;
     thread_args *resend_args = malloc(sizeof(thread_args));
+    if (resend_args == NULL) {
+        state = ABORT;
+        return -ENOMEM;
+    }
     resend_args->window = &window;
     resend_args->socket = socketfd;
     resend_args->task = RESENDER;
-    pthread_create(&resend_thread, NULL, start_thread, resend_args);
+    if (pthread_create(&resend_thread, NULL, start_thread, resend_args) != 0) {
+        state = ABORT;
+        return -EAGAIN;
+    }
 
     pthread_t listen_thread;
     thread_args *listen_args = malloc(sizeof(thread_args));
+    if (listen_args == NULL) {
+        state = ABORT;
+        return -ENOMEM;
+    }
     listen_args->socket = socketfd;
     listen_args->window = &window;
     listen_args->task = LISTENER;
-    pthread_create(&listen_thread, NULL, start_thread, listen_args);
+    if (pthread_create(&listen_thread, NULL, start_thread, listen_args) != 0) {
+        state = ABORT;
+        return -EAGAIN;
+    }
 
     pthread_t sender_thread;
     thread_args *sender_args = malloc(sizeof(thread_args));
+    if (sender_args == NULL) {
+        state = ABORT;
+        return -ENOMEM;
+    }
     sender_args->queue = &queue;
     sender_args->window = &window;
     sender_args->dest_ip = dest_ip;
     sender_args->socket = socketfd;
     sender_args->task = SENDER;
-    pthread_create(&sender_thread, NULL, start_thread, sender_args);
+    if (pthread_create(&sender_thread, NULL, start_thread, sender_args) != 0) {
+        state = ABORT;
+        return -EAGAIN;
+    }
 
     // Send header
     size_t packet_size = 0;
@@ -483,7 +505,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
         memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
     queue.head = (queue.head + to_copy) % queue.capacity;
     queue.count += to_copy;
-    pthread_mutex_unlock(&)
+    pthread_mutex_unlock(&queue.lock);
     current += to_copy;
 
     while (state != ABORT && current < file_size) {

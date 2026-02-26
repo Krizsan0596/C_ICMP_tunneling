@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <errno.h>
 #include "../lib/sender.h"
 
 extern volatile _Atomic program_state state;
@@ -32,7 +33,7 @@ int main(int argc, char **argv) {
     producer_args->dest_ip = argv[2];
     producer_args->task = WRAPPER;
     
-    pthread_create(&producer_thread, NULL, start_thread, producer_args);
+    if (pthread_create(&producer_thread, NULL, start_thread, producer_args) != 0) return EAGAIN;
     ssize_t *file_size;
 
     sig.sa_handler = &handle_sigint;
@@ -46,6 +47,7 @@ int main(int argc, char **argv) {
         pthread_join(producer_thread, (void **)&file_size);
         free(file_size);
     }
+    free(producer_args);
 
     return 0;
 }

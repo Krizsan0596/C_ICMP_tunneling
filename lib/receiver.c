@@ -48,6 +48,7 @@ ssize_t receive_payload(int socket, uint8_t *data, uint16_t *sequence, struct in
 
     struct iphdr *ip_header = (struct iphdr *)buffer;
     int ip_header_len = ip_header->ihl * 4;
+    if (ip_header_len >= buffer_size) return -2; // Header too big, broken packet
 
     struct in_addr src_addr;
     src_addr.s_addr = ip_header->saddr;
@@ -86,9 +87,12 @@ ssize_t receive_file(int socket, char *out_file) {
             for (int i = 2; i < 10; i++) {
                 file_size = (file_size << 8) | buffer[i];
             }
+            if (file_size > 65536 * PAYLOAD_SIZE) return -ENOSPC; // 16 bit seq -> 2^16 * PAYLOAD_SIZE (56) is max file size. 
+                                                                  // TODO: seq wrapping.
             if(write_map(out_file, &data, file_size, &map_fd) <= 0) return -1;
             num_chunks = ((file_size + PAYLOAD_SIZE - 1)/ PAYLOAD_SIZE);
             recvd_sequences = calloc(num_chunks, sizeof(bool));
+            if (recvd_sequences == NULL) return -ENOMEM;
             source_locked = true;
             continue;
         }
