@@ -3,7 +3,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <arpa/inet.h>
-#include <bits/pthreadtypes.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
