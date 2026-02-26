@@ -18,8 +18,6 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 
-extern volatile _Atomic program_state state;
-
 /*
  * Reads from a file into memory (mmap).
  * Returns the file size in bytes on success or a negative code on error.

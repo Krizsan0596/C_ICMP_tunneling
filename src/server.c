@@ -8,7 +8,7 @@
 #include <errno.h>
 #include "../lib/sender.h"
 
-extern volatile _Atomic program_state state;
+volatile _Atomic program_state state = RUNNING;
 
 void handle_sigint(int sig){
     state = ABORT;
