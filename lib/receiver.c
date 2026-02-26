@@ -71,13 +71,13 @@ ssize_t receive_file(int socket, char *out_file) {
     uint64_t received_len = 0;
     uint64_t file_size = 0;
     uint64_t num_chunks;
-    bool *recvd_sequences;
+    bool *recvd_sequences = NULL;
     int map_fd = -1;
-    do {
+    while (!source_locked || received_len < file_size) {
         uint8_t buffer[1024];
         uint16_t sequence;
         ssize_t data_len = receive_payload(socket, buffer, &sequence, &source);
-        if (data_len < 0) continue;
+        if (data_len <= 0) continue;
         if (!source_locked) {
             uint8_t magic[2] = { (MAGIC_NUMBER >> 8) & 0xFF, MAGIC_NUMBER & 0xFF };
             if (memcmp(magic, buffer, 2) != 0) {
@@ -102,8 +102,8 @@ ssize_t receive_file(int socket, char *out_file) {
         if (recvd_sequences[sequence]) continue;
         memcpy(&data[sequence * PAYLOAD_SIZE], buffer, min(data_len, (file_size - sequence * PAYLOAD_SIZE))); // data_len includes padding
         recvd_sequences[sequence] = true;
-        received_len += min(data_len, (file_size - received_len));
-    } while (received_len < file_size);
+        received_len += min(data_len, (file_size - (uint64_t)sequence * PAYLOAD_SIZE));
+    }
     free(recvd_sequences);
     msync(data, file_size, MS_SYNC);
     munmap(data, file_size);
