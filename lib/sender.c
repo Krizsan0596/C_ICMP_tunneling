@@ -360,10 +360,16 @@ void resend_timeout(sliding_window *window, int socket) {
 
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
     while (state != ABORT && state != DATA_SENT) {
-        sem_wait(&window->counter);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += 1;
+        if (sem_timedwait(&window->counter, &ts) != 0) continue;
         pthread_mutex_lock(&queue->lock);
         while (state != ABORT && queue->count == 0) {
-            pthread_cond_wait(&queue->data_available, &queue->lock);
+            struct timespec ts2;
+            clock_gettime(CLOCK_REALTIME, &ts2);
+            ts2.tv_sec += 1;
+            pthread_cond_timedwait(&queue->data_available, &queue->lock, &ts2);
         }
         uint8_t payload[PAYLOAD_SIZE];
         size_t bytes_to_copy = queue->count < PAYLOAD_SIZE ? queue->count : PAYLOAD_SIZE;
@@ -384,7 +390,14 @@ int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const 
         while (state != ABORT && send_packet(socket, dest_ip, packet, packet_size, window, false) <= 0);
         free(packet);
 
-        if (state == DATA_QUEUED && queue->count == 0) state = DATA_SENT;
+        if (state == DATA_QUEUED && queue->count == 0) {
+            state = DATA_SENT;
+            pthread_mutex_lock(&window->lock);
+            if (window->count == 0) {
+                state = DATA_RECVD;
+            }
+            pthread_mutex_unlock(&window->lock);
+        }
     }
     return 0;
 }
@@ -487,8 +500,12 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
 
     // Wait until the header is acknowledged before queuing any data.
     pthread_mutex_lock(&window.lock);
-    while (state != ABORT && window.count > 0)
-        pthread_cond_wait(&window.ack, &window.lock);
+    while (state != ABORT && window.count > 0) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        ts.tv_sec += 1;
+        pthread_cond_timedwait(&window.ack, &window.lock, &ts);
+    }
     pthread_mutex_unlock(&window.lock);
 
     size_t to_copy = min(1024, (size_t)file_size - current);
@@ -504,8 +521,11 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
 
     while (state != ABORT && current < file_size) {
         pthread_mutex_lock(&queue.lock);
-        while (queue.count > queue.capacity - PRODUCE_THRESHOLD) {
-            pthread_cond_wait(&queue.space_available, &queue.lock);
+        while (state != ABORT && queue.count > queue.capacity - PRODUCE_THRESHOLD) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 1;
+            pthread_cond_timedwait(&queue.space_available, &queue.lock, &ts);
         }
         size_t free_space = queue.capacity - queue.count;
         size_t to_copy = min(free_space, (size_t)file_size - current);
