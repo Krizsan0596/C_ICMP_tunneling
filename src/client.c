@@ -4,7 +4,7 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: ./%s OUTPUT_FILENAME", argv[0]);
+        fprintf(stderr, "Usage: ./%s OUTPUT_FILENAME\n", argv[0]);
         return 1;
     }
 

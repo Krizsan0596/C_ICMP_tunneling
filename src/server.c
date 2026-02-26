@@ -44,6 +44,7 @@ int main(int argc, char **argv) {
 
     while (state != ABORT && state != FINISHED) {
         pthread_join(producer_thread, (void **)&file_size);
+        free(file_size);
     }
 
     return 0;
