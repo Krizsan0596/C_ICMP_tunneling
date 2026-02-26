@@ -9,7 +9,17 @@ int main(int argc, char **argv) {
     }
 
     int socketfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    receive_file(socketfd, argv[1]);
+    if (socketfd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    int ret = receive_file(socketfd, argv[1]);
+    if (ret != 0) {
+        fprintf(stderr, "Error: failed to receive file (code %d)\n", ret);
+        close(socketfd);
+        return 1;
+    }
     close(socketfd);
     return 0;
 }

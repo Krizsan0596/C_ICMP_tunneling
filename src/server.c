@@ -1,4 +1,4 @@
-#include <bits/types/sigset_t.h>
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stddef.h>
@@ -7,7 +7,7 @@
 #include <signal.h>
 #include "../lib/sender.h"
 
-volatile _Atomic program_state state = RUNNING;
+extern volatile _Atomic program_state state;
 
 void handle_sigint(int sig){
     state = ABORT;
@@ -15,7 +15,8 @@ void handle_sigint(int sig){
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "Usage: ./%s INPUT_FILENAME DESTINATION_IP", argv[0]);
+        fprintf(stderr, "Usage: ./%s INPUT_FILENAME DESTINATION_IP\n", argv[0]);
+        return EXIT_FAILURE;
     }
 
     sigset_t set;

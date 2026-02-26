@@ -1,5 +1,5 @@
 #include "sender.h"
-#include <bits/time.h>
+
 #include <errno.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
@@ -18,7 +18,7 @@
 #include <fcntl.h>
 #include <arpa/inet.h>
 
-volatile _Atomic program_state state = RUNNING;
+extern volatile _Atomic program_state state;
 
 /*
  * Reads from a file into memory (mmap).
@@ -214,15 +214,18 @@ int64_t send_packet(int socket, const char *dest_ip, icmp_packet *packet, size_t
         pthread_mutex_unlock(&window->lock);
     }
     else {
-    for (int i = 0; i < window->count; i++) {
+        pthread_mutex_lock(&window->lock);
+        for (int i = 0; i < window->count; i++) {
             int idx = (window->tail + i) % WINDOW_SIZE;
-            pthread_mutex_lock(&window->lock);
             if (memcmp(&window->queue[idx].packet, packet, sizeof(icmp_packet)) == 0) {
-                clock_gettime(CLOCK_MONOTONIC, &window->queue[idx].timeout_time);
-                pthread_mutex_unlock(&window->lock);
+                struct timespec new_timeout;
+                clock_gettime(CLOCK_MONOTONIC, &new_timeout);
+                new_timeout.tv_sec += TIMEOUT;
+                window->queue[idx].timeout_time = new_timeout;
                 break;
             }
         }
+        pthread_mutex_unlock(&window->lock);
     }
 
     if (default_packet) free(default_packet);
@@ -348,7 +351,9 @@ void resend_timeout(sliding_window *window, int socket) {
         pthread_cond_timedwait(&window->ack, &window->lock, &soonest_timeout);
         pthread_mutex_unlock(&window->lock);
     }
-    state = FINISHED;
+    if (state == DATA_RECVD) {
+        state = FINISHED;
+    }
 }
 
 int payload_tunnel(int socket, data_queue *queue, sliding_window *window, const char *dest_ip) {
@@ -451,7 +456,11 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     // Send header
     size_t packet_size = 0;
     icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
-    send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
+    int send_result = send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
+    if (send_result < 0) {
+        fprintf(stderr, "Failed to send header packet (error code: %d)\n", send_result);
+    }
+    free(packet);
 
     // Wait until the header is acknowledged before queuing any data.
     pthread_mutex_lock(&window.lock);
