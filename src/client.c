@@ -1,6 +1,7 @@
 #include "../lib/receiver.h"
 #include <stdio.h>
 #include <unistd.h>
+#include <sys/socket.h>
 
 int main(int argc, char **argv) {
     if (argc < 2) {
@@ -15,7 +16,7 @@ int main(int argc, char **argv) {
     }
 
     int ret = receive_file(socketfd, argv[1]);
-    if (ret != 0) {
+    if (ret < 0) {
         fprintf(stderr, "Error: failed to receive file (code %d)\n", ret);
         close(socketfd);
         return 1;
