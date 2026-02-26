@@ -80,6 +80,8 @@ void* start_thread(void *args) {
                resend_timeout(opts.window, opts.socket);
                return NULL;
             }
+        default:
+            return NULL;
     }
 }
 
@@ -431,7 +433,10 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     pthread_cond_init(&queue.space_available, NULL);
 
     int socketfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    
+    if (socketfd == -1) {
+        perror("socket");
+        exit(EXIT_FAILURE);
+    }
     pthread_t resend_thread;
     thread_args *resend_args = malloc(sizeof(thread_args));
     resend_args->window = &window;
@@ -457,7 +462,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
 
     // Send header
     size_t packet_size = 0;
-    icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 11, &packet_size);
+    icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 10, &packet_size);
     int send_result = send_packet(socketfd, dest_ip, packet, packet_size, &window, false);
     if (send_result < 0) {
         fprintf(stderr, "Failed to send header packet (error code: %d)\n", send_result);
