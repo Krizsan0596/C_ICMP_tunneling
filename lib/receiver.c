@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,14 +34,17 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int 
     }
     *data = map;
     posix_fadvise(*fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
-    madvise(data, file_size, MADV_SEQUENTIAL);
+    madvise(*data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
 }
 
 ssize_t receive_payload(int socket, uint8_t *data, uint16_t *sequence, struct in_addr *source) {
     uint8_t buffer[1024];
     memset(buffer, 0, sizeof(buffer));
-    size_t buffer_size = receive_packet(socket, buffer, sizeof(buffer));
+    ssize_t buffer_size = receive_packet(socket, buffer, sizeof(buffer));
+
+    if (buffer_size <= 0) return buffer_size;
+    if (buffer_size < sizeof(struct icmphdr) + sizeof(struct iphdr)) return -2; // Packet too small, broken packet
 
     struct iphdr *ip_header = (struct iphdr *)buffer;
     int ip_header_len = ip_header->ihl * 4;
@@ -65,6 +69,7 @@ ssize_t receive_file(int socket, char *out_file) {
     uint8_t *data = NULL;
     uint64_t received_len = 0;
     uint64_t file_size = 0;
+    uint64_t num_chunks;
     bool *recvd_sequences;
     int map_fd = -1;
     do {
@@ -82,17 +87,20 @@ ssize_t receive_file(int socket, char *out_file) {
                 file_size = (file_size << 8) | buffer[i];
             }
             if(write_map(out_file, &data, file_size, &map_fd) <= 0) return -1;
-            recvd_sequences = calloc(((file_size + PAYLOAD_SIZE - 1)/ PAYLOAD_SIZE), sizeof(bool));
+            num_chunks = ((file_size + PAYLOAD_SIZE - 1)/ PAYLOAD_SIZE);
+            recvd_sequences = calloc(num_chunks, sizeof(bool));
             source_locked = true;
             continue;
         }
         if (sequence < 2) continue; // retransmitted header, ACK was dropped, avoids integer underflow.
         sequence -= 2; // Sequence starts at 1, first packet is header. First data packet is sequence 2.
+        if (sequence >= num_chunks) continue; // Received more data than the file size, corrupted sequence, prevent overindexing.
         if (recvd_sequences[sequence]) continue;
         memcpy(&data[sequence * PAYLOAD_SIZE], buffer, min(data_len, (file_size - sequence * PAYLOAD_SIZE))); // data_len includes padding
         recvd_sequences[sequence] = true;
         received_len += min(data_len, (file_size - received_len));
     } while (received_len < file_size);
+    free(recvd_sequences);
     msync(data, file_size, MS_SYNC);
     munmap(data, file_size);
     fsync(map_fd);

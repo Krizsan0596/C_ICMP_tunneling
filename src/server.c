@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
     thread_args *producer_args = malloc(sizeof(thread_args));
     producer_args->file = argv[1];
     producer_args->dest_ip = argv[2];
+    producer_args->task = WRAPPER;
     
     pthread_create(&producer_thread, NULL, start_thread, producer_args);
     ssize_t *file_size;

@@ -49,7 +49,7 @@ int64_t read_map(const char *filename, const uint8_t** data, int *fd){
     }
     *data = map;
     posix_fadvise(*fd, 0, file_size, POSIX_FADV_SEQUENTIAL);
-    madvise(data, file_size, MADV_SEQUENTIAL);
+    madvise((void *)*data, file_size, MADV_SEQUENTIAL);
     return (int64_t)file_size;
 }
 
@@ -306,8 +306,10 @@ int listen_for_reply(int socket, sliding_window *window) {
         pthread_mutex_lock(&window->lock);
         int is_valid = validate_reply(buffer, bytes_received, window->queue, window->tail, window->count);
 
-        if (is_valid < 0) continue; // Ignored or corrupted packet, do nothing.
-        
+        if (is_valid < 0) {
+            pthread_mutex_unlock(&window->lock);
+            continue; // Ignored or corrupted packet, do nothing.
+        }
         window->queue[is_valid].acknowledged = true;
         pthread_mutex_unlock(&window->lock);
         
@@ -394,7 +396,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     if (file_size < 0) return file_size;
     size_t current = 0;
 
-    uint8_t header[11];
+    uint8_t header[10];
     header[0] = (MAGIC_NUMBER >> 8) & 0xFF;
     header[1] = MAGIC_NUMBER & 0xFF;
     for (int i = 2; i < 10; i++) {
@@ -412,7 +414,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     sem_init(&window.counter, 0, 5);
     pthread_condattr_t cattr;
     pthread_condattr_init(&cattr);
-    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC_RAW);
+    pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
     pthread_cond_init(&window.ack, &cattr);
 
     uint8_t queued_data[1024] = {0};
@@ -470,11 +472,13 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
 
     size_t to_copy = min(1024, (size_t)file_size - current);
     size_t first_chunk = min(to_copy, queue.capacity - queue.head);
+    pthread_mutex_lock(&queue.lock);
     memcpy(&queue.buffer[queue.head], &data[current], first_chunk);
     if (first_chunk < to_copy)
         memcpy(queue.buffer, &data[current + first_chunk], to_copy - first_chunk);
     queue.head = (queue.head + to_copy) % queue.capacity;
     queue.count += to_copy;
+    pthread_mutex_unlock(&)
     current += to_copy;
 
     while (state != ABORT && current < file_size) {
