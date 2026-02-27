@@ -1,2 +1,3 @@
 /.nvim_build_cache
 /build
+/.cache
