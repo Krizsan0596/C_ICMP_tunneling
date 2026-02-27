@@ -1,5 +1,8 @@
 #include "receiver.h"
+#include "sender.h"
+#include "util.h"
 #include <errno.h>
+#include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <stdint.h>
@@ -38,7 +41,12 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int 
     return (int64_t)file_size;
 }
 
-ssize_t receive_payload(int socket, uint8_t *data, uint16_t *sequence, struct in_addr *source) {
+int acknowledge_packet(int socket, icmp_packet *packet) {
+    send_packet(socket, packet->dest_ip, packet, sizeof(*packet), NULL, true, false);    
+    return 0;
+}
+
+ssize_t receive_payload(int socket, icmp_packet *ack, uint8_t *data, uint16_t *sequence, struct in_addr *source) {
     uint8_t buffer[1024];
     memset(buffer, 0, sizeof(buffer));
     ssize_t buffer_size = receive_packet(socket, buffer, sizeof(buffer));
@@ -61,6 +69,9 @@ ssize_t receive_payload(int socket, uint8_t *data, uint16_t *sequence, struct in
     if (payload_len != PAYLOAD_SIZE) return -2; // Not packet from tunnel
     memcpy(data, payload, payload_len);
     source->s_addr = src_addr.s_addr;
+    memcpy(&ack->icmp_header, packet, sizeof(struct icmphdr) + PAYLOAD_SIZE);
+    ack->ttl = 64;
+    snprintf(ack->dest_ip, INET_ADDRSTRLEN, "%pI4", (void *)&ip_header->saddr);
     return payload_len;
 }
 
@@ -76,7 +87,8 @@ ssize_t receive_file(int socket, char *out_file) {
     while (!source_locked || received_len < file_size) {
         uint8_t buffer[1024];
         uint16_t sequence;
-        ssize_t data_len = receive_payload(socket, buffer, &sequence, &source);
+        icmp_packet ack;
+        ssize_t data_len = receive_payload(socket, &ack, buffer, &sequence, &source);
         if (data_len <= 0) continue;
         if (!source_locked) {
             uint8_t magic[2] = { (MAGIC_NUMBER >> 8) & 0xFF, MAGIC_NUMBER & 0xFF };
@@ -94,6 +106,7 @@ ssize_t receive_file(int socket, char *out_file) {
             recvd_sequences = calloc(num_chunks, sizeof(bool));
             if (recvd_sequences == NULL) return -ENOMEM;
             source_locked = true;
+            acknowledge_packet(socket, &ack);
             continue;
         }
         if (sequence < 2) continue; // retransmitted header, ACK was dropped, avoids integer underflow.
@@ -103,6 +116,7 @@ ssize_t receive_file(int socket, char *out_file) {
         memcpy(&data[sequence * PAYLOAD_SIZE], buffer, min(data_len, (file_size - sequence * PAYLOAD_SIZE))); // data_len includes padding
         recvd_sequences[sequence] = true;
         received_len += min(data_len, (file_size - (uint64_t)sequence * PAYLOAD_SIZE));
+        acknowledge_packet(socket, &ack);
     }
     free(recvd_sequences);
     msync(data, file_size, MS_SYNC);
