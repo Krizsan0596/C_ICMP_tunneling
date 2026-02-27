@@ -60,18 +60,24 @@ ssize_t receive_payload(int socket, icmp_packet *ack, uint8_t *data, uint16_t *s
 
     struct in_addr src_addr;
     src_addr.s_addr = ip_header->saddr;
-    if (source->s_addr != 0 && memcmp(source, &src_addr, sizeof(struct in_addr)) != 0) return -1; // Not a packet from known tunnel source.
     uint8_t *packet = buffer + ip_header_len;
     if (calculate_checksum((unsigned short *)packet, buffer_size - ip_header_len) != 0) return -2; // Incorrect checksum, broken data
-    *sequence = ntohs(((struct icmphdr*) packet)->un.echo.sequence);
-    uint8_t *payload = packet + sizeof(struct icmphdr);
-    size_t payload_len = buffer_size - (ip_header_len + sizeof(struct icmphdr));
-    if (payload_len != PAYLOAD_SIZE) return -2; // Not packet from tunnel
-    memcpy(data, payload, payload_len);
     source->s_addr = src_addr.s_addr;
     memcpy(&ack->icmp_header, packet, sizeof(struct icmphdr) + PAYLOAD_SIZE);
     ack->ttl = 64;
     snprintf(ack->dest_ip, INET_ADDRSTRLEN, "%pI4", (void *)&ip_header->saddr);
+    if (source->s_addr != 0 && memcmp(source, &src_addr, sizeof(struct in_addr)) != 0) { // Not a packet from known tunnel source. 
+        acknowledge_packet(socket, ack);  // Normal ICMP Echo Reply for non tunneled packets.
+        return -1;
+    }
+    *sequence = ntohs(((struct icmphdr*) packet)->un.echo.sequence);
+    uint8_t *payload = packet + sizeof(struct icmphdr);
+    size_t payload_len = buffer_size - (ip_header_len + sizeof(struct icmphdr));
+    if (payload_len != PAYLOAD_SIZE) { // Not packet from tunnel
+        acknowledge_packet(socket, ack);
+        return -1;
+    }
+    memcpy(data, payload, payload_len);
     return payload_len;
 }
 
