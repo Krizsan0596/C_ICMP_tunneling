@@ -396,12 +396,12 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
 
     int *sender_ret;
     pthread_join(sender_thread, (void**)&sender_ret);
-    if (*sender_ret != 0) fprintf(stderr, "Sender error.");
+    if (*sender_ret != 0) perror("Sender error.");
     free(sender_ret);
 
     int *listener_ret;
     pthread_join(listen_thread, (void**)&listener_ret);
-    if (*listener_ret != 0) fprintf(stderr, "Listener error.");
+    if (*listener_ret != 0) perror("Listener error.");
     free(listener_ret);
 
     pthread_join(resend_thread, NULL);
