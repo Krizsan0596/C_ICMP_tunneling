@@ -42,12 +42,19 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int 
     return (int64_t)file_size;
 }
 
-int set_kernel_replies(bool setting) {
+int set_kernel_replies(bool setting, bool *original) {
     int fd = open("/proc/sys/net/ipv4/icmp_echo_ignore_all", O_WRONLY);
     if (fd < 0) {
-        return -1;
+        return -EIO;
     }
-    write(fd, setting ? "0" : "1", 1);
+    if (read(fd, original, 1) != 1) {
+        close(fd);
+        return -EIO;
+    }
+    if (write(fd, setting ? "0" : "1", 1) != 1) {
+        close(fd);
+        return -EIO;
+    }
     close(fd);
     return 0;
 }
