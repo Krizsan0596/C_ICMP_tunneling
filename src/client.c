@@ -15,7 +15,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to create socket. Did you forget sudo?");
         return EPERM;
     }
-    if (set_kernel_replies(0) != 0) {
+
+    bool original_setting;
+    if (set_kernel_replies(0, &original_setting) != 0) {
         fprintf(stderr, "Failed to turn off kernel echo replies. Did you forget sudo?");
         return EPERM;
     }
@@ -29,5 +31,11 @@ int main(int argc, char **argv) {
     }
     close(socketfd);
     fprintf(stdout, "%ld bytes of data received. Done!\n", file_size);
+
+    bool temp;
+    if (set_kernel_replies(original_setting, &temp) != 0) {
+        fprintf(stderr, "Failed to turn on kernel echo replies. Did you forget sudo?");
+        return EPERM;
+    }
     return 0;
 }
