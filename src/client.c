@@ -12,7 +12,7 @@ int main(int argc, char **argv) {
 
     int socketfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (socketfd < 0) {
-        fprintf(stderr, "Failed to create socket. Did you forget sudo?");
+        perror("Failed to create socket. Did you forget sudo?");
         return EPERM;
     }
 
@@ -31,11 +31,11 @@ int main(int argc, char **argv) {
         return EPERM;
     }
     close(socketfd);
-    fprintf(stdout, "%ld bytes of data received. Done!\n", file_size);
+    fprintf(stdout, "%zd bytes of data received. Done!\n", file_size);
 
     bool temp;
     if (set_kernel_replies(original_setting, &temp) != 0) {
-        fprintf(stderr, "Failed to turn on kernel echo replies. Did you forget sudo?");
+        perror("Failed to restore kernel echo replies. Did you forget sudo?");
         return EPERM;
     }
     return 0;
