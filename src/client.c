@@ -19,6 +19,7 @@ int main(int argc, char **argv) {
     bool original_setting;
     if (set_kernel_replies(0, &original_setting) != 0) {
         fprintf(stderr, "Failed to turn off kernel echo replies. Did you forget sudo?");
+        close(socketfd);
         return EPERM;
     }
 

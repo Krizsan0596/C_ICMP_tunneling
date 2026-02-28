@@ -346,6 +346,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     int send_result = send_packet(socketfd, dest_ip, packet, packet_size, &window, false, false);
     if (send_result < 0) {
         fprintf(stderr, "Failed to send header packet (error code: %d)\n", send_result);
+        sem_post(&window.counter);
     }
     free(packet);
 
