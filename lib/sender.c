@@ -340,6 +340,7 @@ ssize_t send_file(const char *dest_ip, const char *in_file) {
     }
 
     // Send header
+    sem_wait(&window.counter);
     size_t packet_size = 0;
     icmp_packet *packet = generate_custom_ping_packet(getpid() & 0xFFFF, window.next_sequence, 64, header, 10, &packet_size);
     int send_result = send_packet(socketfd, dest_ip, packet, packet_size, &window, false, false);
