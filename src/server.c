@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
     producer_args->dest_ip = argv[2];
     producer_args->task = WRAPPER;
     
+    fprintf(stdout, "Preparing to send data...\n");
     if (pthread_create(&producer_thread, NULL, start_thread, producer_args) != 0) return EAGAIN;
     ssize_t *file_size;
 
@@ -44,6 +45,7 @@ int main(int argc, char **argv) {
     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
     pthread_join(producer_thread, (void **)&file_size);
+    fprintf(stdout, "%ld bytes of data sent. Done!\n", *file_size);
     free(file_size);
     free(producer_args);
 

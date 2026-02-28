@@ -42,6 +42,16 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int 
     return (int64_t)file_size;
 }
 
+int set_kernel_replies(bool setting) {
+    int fd = open("/proc/sys/net/ipv4/icmp_echo_ignore_all", O_WRONLY);
+    if (fd < 0) {
+        return -1;
+    }
+    write(fd, setting ? "0" : "1", 1);
+    close(fd);
+    return 0;
+}
+
 int acknowledge_packet(int socket, icmp_packet *packet) {
     send_packet(socket, packet->dest_ip, packet, sizeof(*packet), NULL, false, true);    
     return 0;

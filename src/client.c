@@ -2,25 +2,32 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <errno.h>
 
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: ./%s OUTPUT_FILENAME\n", argv[0]);
-        return 1;
+        return EINVAL;
     }
 
     int socketfd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (socketfd < 0) {
-        perror("socket");
-        return 1;
+        fprintf(stderr, "Failed to create socket. Did you forget sudo?");
+        return EPERM;
+    }
+    if (set_kernel_replies(0) != 0) {
+        fprintf(stderr, "Failed to turn off kernel echo replies. Did you forget sudo?");
+        return EPERM;
     }
 
-    int ret = receive_file(socketfd, argv[1]);
-    if (ret < 0) {
-        fprintf(stderr, "Error: failed to receive file (code %d)\n", ret);
+    fprintf(stdout, "Listening for data...\n");
+    ssize_t file_size = receive_file(socketfd, argv[1]);
+    if (file_size < 0) {
+        fprintf(stderr, "Error: failed to receive file (code %ld)\n", file_size);
         close(socketfd);
-        return 1;
+        return EPERM;
     }
     close(socketfd);
+    fprintf(stdout, "%ld bytes of data received. Done!\n", file_size);
     return 0;
 }
