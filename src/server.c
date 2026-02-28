@@ -45,7 +45,12 @@ int main(int argc, char **argv) {
     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
     pthread_join(producer_thread, (void **)&file_size);
-    fprintf(stdout, "%ld bytes of data sent. Done!\n", *file_size);
+
+    if (file_size == NULL || *file_size < 0) {
+        fprintf(stderr, "Error: failed to send data.\n");
+    } else {
+        fprintf(stdout, "%zd bytes of data sent. Done!\n", *file_size);
+    }
     free(file_size);
     free(producer_args);
 

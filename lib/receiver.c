@@ -60,7 +60,8 @@ int set_kernel_replies(bool setting, bool *original) {
 }
 
 int acknowledge_packet(int socket, icmp_packet *packet) {
-    send_packet(socket, packet->dest_ip, packet, sizeof(*packet), NULL, false, true);    
+    size_t packet_size = sizeof(struct icmphdr) + PAYLOAD_SIZE;
+    send_packet(socket, packet->dest_ip, packet, packet_size, NULL, false, true);
     return 0;
 }
 
