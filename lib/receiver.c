@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -42,7 +43,7 @@ int64_t write_map(const char *filename, uint8_t **data, uint64_t file_size, int 
 }
 
 int acknowledge_packet(int socket, icmp_packet *packet) {
-    send_packet(socket, packet->dest_ip, packet, sizeof(*packet), NULL, true, false);    
+    send_packet(socket, packet->dest_ip, packet, sizeof(*packet), NULL, false, true);    
     return 0;
 }
 
@@ -63,9 +64,11 @@ ssize_t receive_payload(int socket, icmp_packet *ack, uint8_t *data, uint16_t *s
     uint8_t *packet = buffer + ip_header_len;
     if (calculate_checksum((unsigned short *)packet, buffer_size - ip_header_len) != 0) return -2; // Incorrect checksum, broken data
     source->s_addr = src_addr.s_addr;
+
     memcpy(&ack->icmp_header, packet, sizeof(struct icmphdr) + PAYLOAD_SIZE);
     ack->ttl = 64;
-    snprintf(ack->dest_ip, INET_ADDRSTRLEN, "%pI4", (void *)&ip_header->saddr);
+    inet_ntop(AF_INET, &src_addr.s_addr, ack->dest_ip, INET_ADDRSTRLEN);
+
     if (source->s_addr != 0 && memcmp(source, &src_addr, sizeof(struct in_addr)) != 0) { // Not a packet from known tunnel source. 
         acknowledge_packet(socket, ack);  // Normal ICMP Echo Reply for non tunneled packets.
         return -1;
